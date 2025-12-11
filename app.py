@@ -50,12 +50,15 @@ region = ee.Geometry.Rectangle([120.48, 23.90, 120.65, 24.10])
 years = list(range(2013, 2024))
 
 # 函數：取得七月含雲量最低的 Landsat 8 B10 紅外波段平均值
+# 函數：取得七月含雲量最低的 Landsat 8 ST_B10 (Collection 2) 平均值
 def get_l8_july(year):
     collection = (
-        ee.ImageCollection("LANDSAT/LC08/C01/T1_TOA")
+        # *** 修正點 1: 使用 C02/T1_L2 路徑 ***
+        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
         .filterBounds(region)
         .filterDate(f"{year}-07-01", f"{year}-07-31")
-        .select("B10")
+        # *** 修正點 2: 使用 ST_B10 波段名稱 ***
+        .select("ST_B10") 
         .sort("CLOUD_COVER")
     )
     
@@ -69,10 +72,10 @@ def get_l8_july(year):
         reducer=ee.Reducer.mean(),
         geometry=region,
         scale=30,
-        bestEffort=True # 增加 bestEffort 避免計算過大問題
+        bestEffort=True
     )
-    # 處理可能的 None 或字典鍵值問題
-    value = stats.get('B10').getInfo() if stats.get('B10') else None
+    # 這裡的鍵名也要從 'B10' 改為 'ST_B10'
+    value = stats.get('ST_B10').getInfo() if stats.get('ST_B10') else None
     return value
 
 # 預計算每年的紅外值
