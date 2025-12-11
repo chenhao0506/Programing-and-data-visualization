@@ -176,5 +176,4 @@ def update_image(selected_year):
 # 5. Dash App 啟動 (使用你指定的格式)
 # ----------------------------------------------------
 if __name__ == '__main__':
-    print(f"--- Dash server starting on 0.0.0.0:{PORT} ---")
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    app.run(host="0.0.0.0", port=7860, debug=False)
