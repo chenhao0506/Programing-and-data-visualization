@@ -1,6 +1,7 @@
 import os
 import ee
 import geemap
+from google.oauth2 import service_account
 
 # 驗證 geemap 是否匯入成功
 print("geemap version:", geemap.__version__)
