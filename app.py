@@ -47,28 +47,30 @@ years = list(range(2013, 2024))
 VIS_PARAMS = {
     'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 
     'min': 0, 
-    'max': 20000, 
+    'max': 15000, # 維持優化後的對比度
     'gamma': 1.4
 }
 
-# 函數：取得七月含雲量最低的 Landsat 8 影像 (回傳 ee.Image 物件)
+# 函數：取得七月 Landsat 8 影像集合的中位數影像 (回傳 ee.Image 物件)
 def get_l8_july_image(year):
-    """取得指定年份七月含雲量最低的 Landsat 8 C02 L2 影像物件。"""
+    """取得指定年份七月 Landsat 8 C02 L2 影像集合的中位數影像。"""
     collection = (
         ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
         .filterBounds(region)
-        .filterDate(f"{year}-07-01", f"{year}-07-31")
-        .sort("CLOUD_COVER") # 按含雲量排序
-        .limit(1)
+        # 維持七月日期範圍
+        .filterDate(f"{year}-07-01", f"{year}-07-31") 
     )
     
-    first_image = collection.first()
-    if first_image is None:
+    # 檢查集合是否為空
+    if collection.size().getInfo() == 0:
         print(f"Warning: No Landsat 8 image found for July {year}.")
         return None
         
+    # ** 修正點: 移除 .sort().limit(1)，改用 .median() 進行聚合去雲 **
+    median_image = collection.median().clip(region) 
+    
     # 選擇 RGB 波段並裁剪
-    return ee.Image(first_image).clip(region).select('SR_B4', 'SR_B3', 'SR_B2')
+    return median_image.select('SR_B4', 'SR_B3', 'SR_B2')
 
 
 # ----------------------------------------------------
@@ -77,7 +79,7 @@ def get_l8_july_image(year):
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
-    html.H1("Landsat 8 七月衛星影像瀏覽器 - GEE/Dash", style={'textAlign': 'center', 'margin-bottom': '20px'}),
+    html.H1("Landsat 8 七月衛星影像瀏覽器 (Median) - GEE/Dash", style={'textAlign': 'center', 'margin-bottom': '20px'}),
     
     # ----------------------------------------------------
     # 滑桿控制區 (在上方)
@@ -132,17 +134,16 @@ def update_image(selected_year):
     
     if image is not None:
         # 使用 getThumbURL 生成圖片網址
-        # scale=300 決定了縮圖的分辨率，region 限制了範圍
         url = image.getThumbURL({
             'params': VIS_PARAMS, 
-            'scale': 300, 
+            'scale': 500, # 維持你上次指定的 scale=500
             'region': region.getInfo()
         })
-        status_text = f"當前年份: {selected_year} (影像載入成功)"
+        status_text = f"當前年份: {selected_year} (影像載入成功 - 中位數聚合)"
     else:
         # 如果找不到影像，返回一個透明圖片的 Base64 數據，並提示
         url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
-        status_text = f"當前年份: {selected_year} (錯誤：未找到影像或該月雲量太高)"
+        status_text = f"當前年份: {selected_year} (錯誤：該時段無可用影像)"
         
     return url, status_text
 
@@ -150,4 +151,5 @@ def update_image(selected_year):
 # 5. Dash App 啟動 (使用你指定的格式)
 # ----------------------------------------------------
 if __name__ == '__main__':
+    print(f"--- Dash server starting on 0.0.0.0:{PORT} ---")
     app.run(host="0.0.0.0", port=PORT, debug=False)
