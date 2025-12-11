@@ -1,3 +1,6 @@
-ee
+earthengine-api
 geemap
 google-auth
+dash
+pandas
+plotly
