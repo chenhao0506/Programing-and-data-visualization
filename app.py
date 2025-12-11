@@ -36,56 +36,73 @@ ee.Initialize(credentials)
 print("Earth Engine 初始化成功")
 
 # ----------------------------------------------------
-# 2. GEE 參數定義與影像獲取函數
+# 2. GEE 參數定義與影像獲取函數 (SENTINEL-2, 10m 解析度)
 # ----------------------------------------------------
 
-# 定義研究範圍與年份
-region = ee.Geometry.Rectangle([120.48, 23.90, 120.65, 24.10])
-years = list(range(2013, 2024))
+# 定義研究範圍與年份 (彰化縣的局部區域)
+region = ee.Geometry.Rectangle([120.49, 23.92, 120.65, 24.10])
+# 年份範圍調整為 2019 到 2024
+years = list(range(2019, 2026)) 
 
-# Landsat 8 C02 L2 (Surface Reflectance) 可視化參數 (自然色)
+# Sentinel-2 L2A (Surface Reflectance) 可視化參數 (自然色)
 VIS_PARAMS = {
-    'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 
+    'bands': ['B4', 'B3', 'B2'], # R, G, B 波段
     'min': 0, 
-    'max': 15000, # 維持優化後的對比度
+    'max': 3000, # S2 SR 範圍 0-10000，將 max 設為 3000 (0.3 反射率)
     'gamma': 1.4
 }
 
-# 函數：取得七月 Landsat 8 影像集合的中位數影像 (回傳 ee.Image 物件)
-def get_l8_july_image(year):
-    """取得指定年份七月 Landsat 8 C02 L2 影像集合的中位數影像。"""
+def get_s2_july_image(year):
+    """取得指定年份七月經過雲層遮蔽的 Sentinel-2 影像中位數 (10米解析度)。"""
+    
+    # *** 關鍵修正 1: 影像集合從 2019 年 7 月 1 日開始查詢到該年份的 7 月 31 日 ***
+    # 由於您的需求是 medium/median，我們將只聚合該年份 7 月的影像
     collection = (
-        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
+        ee.ImageCollection("COPERNICUS/S2_SR") 
         .filterBounds(region)
-        # 維持七月日期範圍
         .filterDate(f"{year}-07-01", f"{year}-07-31") 
+        .filterMetadata('CLOUDY_PIXEL_PERCENTAGE', 'less_than', 95)
+        
+        # 應用 Sentinel-2 雲層遮蔽 (只遮蔽高概率雲 SCL=9, 10)
+        .map(mask_s2_clouds)
     )
     
-    # 檢查集合是否為空
-    if collection.size().getInfo() == 0:
-        print(f"Warning: No Landsat 8 image found for July {year}.")
+    # 檢查是否有足夠的影像
+    size = collection.size().getInfo()
+    if size == 0:
+        print(f"Warning: No images found for July {year}.")
+        return None
+    
+    # *** 關鍵修正 2: 使用中位數聚合 (.median()) ***
+    image = collection.median()
+    
+    # 檢查 median 聚合結果是否為全 NULL
+    try:
+        # 使用 select() 確保至少有 RGB 波段
+        if image.select('B4').bandNames().size().getInfo() == 0:
+            print(f"Warning: Median image contains no valid data for July {year}.")
+            return None
+    except Exception:
+        print(f"Warning: GEE image processing failed for July {year}. Result is likely void.")
         return None
         
-    # ** 修正點: 移除 .sort().limit(1)，改用 .median() 進行聚合去雲 **
-    median_image = collection.median().clip(region) 
-    
-    # 選擇 RGB 波段並裁剪
-    return median_image.select('SR_B4', 'SR_B3', 'SR_B2')
+    # 裁剪並選擇 RGB 波段 (S2 波段名稱 B4/B3/B2)
+    return image.clip(region).select('B4', 'B3', 'B2')
 
 
 # ----------------------------------------------------
-# 3. Dash App 建立 (Slider 移到圖片上方)
+# 3. Dash App 建立
 # ----------------------------------------------------
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
-    html.H1("Landsat 8 七月衛星影像瀏覽器 (Median) - GEE/Dash", style={'textAlign': 'center', 'margin-bottom': '20px'}),
+    html.H1("Sentinel-2 七月衛星影像瀏覽器 (10m 解析度) - GEE/Dash", 
+             style={'textAlign': 'center', 'margin-bottom': '20px', 'color': '#2C3E50'}),
     
-    # ----------------------------------------------------
-    # 滑桿控制區 (在上方)
-    # ----------------------------------------------------
+    # 滑桿控制區
     html.Div([
-        html.H3(id='year-display', children=f"當前年份: {max(years)}", style={'textAlign': 'center'}),
+        html.H3(id='year-display', children=f"當前年份: {max(years)}", 
+                 style={'textAlign': 'center', 'color': '#34495E'}),
         
         dcc.Slider(
             id='year-slider',
@@ -93,19 +110,17 @@ app.layout = html.Div([
             max=max(years),
             step=1,
             value=max(years),
-            marks={str(y): {'label': str(y), 'style': {'color': '#77b0b1'}} for y in years},
+            marks={str(y): {'label': str(y), 'style': {'color': '#16A085'}} for y in years},
             tooltip={"placement": "bottom", "always_visible": True}
         ),
-    ], style={'padding': '20px', 'width': '80%', 'margin': '0 auto'}),
+    ], style={'padding': '20px', 'width': '80%', 'margin': '0 auto', 'background-color': '#ECF0F1', 'border-radius': '8px'}),
     
-    html.Hr(),
+    html.Hr(style={'margin-top': '30px', 'margin-bottom': '30px'}),
     
-    # ----------------------------------------------------
-    # 圖片顯示區 (在下方)
-    # ----------------------------------------------------
+    # 圖片顯示區
     dcc.Loading(
         id="loading-image",
-        type="default",
+        type="circle",
         children=html.Img(
             id='satellite-image', 
             style={
@@ -113,7 +128,8 @@ app.layout = html.Div([
                 'height': 'auto', 
                 'display': 'block', 
                 'margin': '0 auto', 
-                'border': '1px solid #ccc'
+                'border': '5px solid #3498DB',
+                'border-radius': '8px'
             }
         )
     )
@@ -128,22 +144,31 @@ app.layout = html.Div([
     [dash.Input('year-slider', 'value')]
 )
 def update_image(selected_year):
-    """根據選擇的年份，獲取 Landsat 影像並生成 URL"""
     
-    image = get_l8_july_image(selected_year)
+    print(f"Callback triggered for year: {selected_year}")
+    
+    image = get_s2_july_image(selected_year)
     
     if image is not None:
-        # 使用 getThumbURL 生成圖片網址
-        url = image.getThumbURL({
-            'params': VIS_PARAMS, 
-            'scale': 500, # 維持你上次指定的 scale=500
-            'region': region.getInfo()
-        })
-        status_text = f"當前年份: {selected_year} (影像載入成功 - 中位數聚合)"
+        try:
+            # 傳遞 VIS_PARAMS 和其他參數
+            thumb_params = VIS_PARAMS.copy()
+            
+            # 使用 20m/px 的 scale 避免檔案過大錯誤
+            thumb_params['scale'] = 20 
+            thumb_params['region'] = region.getInfo()
+            
+            url = image.getThumbURL(thumb_params)
+
+            status_text = f"當前年份: {selected_year} (影像載入成功)"
+        except ee.ee_exception.EEException as e:
+            # 捕獲 GEE 錯誤
+            url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+            status_text = f"當前年份: {selected_year} (GEE 影像處理錯誤：{e})"
     else:
-        # 如果找不到影像，返回一個透明圖片的 Base64 數據，並提示
+        # 如果找不到影像
         url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
-        status_text = f"當前年份: {selected_year} (錯誤：該時段無可用影像)"
+        status_text = f"當前年份: {selected_year} (錯誤：該時段無足夠高品質影像)"
         
     return url, status_text
 
