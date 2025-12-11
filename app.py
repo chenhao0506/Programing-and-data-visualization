@@ -39,6 +39,21 @@ print("Earth Engine 初始化成功")
 # 2. GEE 參數定義與影像獲取函數 (SENTINEL-2, 10m 解析度)
 # ----------------------------------------------------
 
+def mask_s2_clouds(image):
+    """使用 Sentinel-2 的 QA 資訊，僅遮蔽高概率雲和卷雲 (SCL=9, 10)。"""
+    scl = image.select('SCL')
+    
+    # 遮蔽 SCL 值為 9 (高概率雲) 和 10 (卷雲)
+    high_prob_cloud = scl.eq(9)
+    cirrus = scl.eq(10)
+    
+    # 建立遮罩：僅保留沒有高概率雲和卷雲的像素
+    mask = high_prob_cloud.Or(cirrus).Not()
+    
+    # 返回應用遮罩後的影像
+    return image.updateMask(mask)
+  
+
 # 定義研究範圍與年份 (彰化縣的局部區域)
 region = ee.Geometry.Rectangle([120.49, 23.92, 120.65, 24.10])
 # 年份範圍調整為 2019 到 2024
