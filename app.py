@@ -189,8 +189,4 @@ def update_graph(selected_year):
 # 5. Dash App 啟動 (Hugging Face Port 環境變數處理)
 # ----------------------------------------------------
 if __name__ == '__main__':
-    # 優先使用環境變數 PORT，如果沒有（例如本地運行），則使用 7860
-    # 這確保了 Dash 應用程式在 Dockerfile 和 Hugging Face Spaces 期望的 Port 上運行
-    port = int(os.environ.get('PORT', 7860))
-    print(f"--- Dash server starting on 0.0.0.0:{port} ---")
-    app.run_server(debug=True, host='0.0.0.0', port=port)
+    app.run(host="0.0.0.0", port=7860, debug=False)
