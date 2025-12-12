@@ -78,9 +78,9 @@ VIS_PARAMS = {
 def get_l8_july_image(year):
     """取得指定年份七月經過雲層遮蔽的 Landsat 8/9 影像中位數 (30米解析度)。"""
     
-    # 集合 ID 維持 'LANDSAT/C02/T1_L2' (L8/L9 混合)
+    # 集合 ID 維持 'LANDSAT/LC08/C02/T1_L2' (L8 混合)
     collection = (
-        ee.ImageCollection("LANDSAT/C02/T1_L2") 
+        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
         .filterBounds(region)
         .filterDate(f"{year}-07-01", f"{year}-07-31") 
         
