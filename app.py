@@ -143,10 +143,11 @@ def get_l8_lst_data(year, grid_size=0.01):
     processed_collection = filtered_collection.map(applyScaleFactors).map(cloudMask)
     image = processed_collection.median() # 中位數聚合
     
-    # 4. 取得平均雲量 (用來顯示)
+# 4. 取得平均雲量 (用來顯示)
     mean_cloud_cover = filtered_collection.aggregate_mean('CLOUD_COVER_LAND').getInfo()
     
-    # 5. 【修正點】：動態計算 NDVI 範圍
+    # 5. 動態計算 NDVI 範圍 (檢查影像是否空白)
+    
     # 必須先計算 NDVI
     nir = image.select('SR_B5') 
     red = image.select('SR_B4') 
@@ -155,14 +156,26 @@ def get_l8_lst_data(year, grid_size=0.01):
     # 計算 NDVI 的 Min/Max 極值
     ndvi_stats = ndvi.reduceRegion(
         reducer=ee.Reducer.minMax(),
-        geometry=region,
+        geometry=region, 
         scale=30,
-        tileScale=8 # 使用 tileScale 確保穩定
+        tileScale=8 
     ).getInfo()
     
+    # === 關鍵修正：檢查統計結果是否為 None ===
+    min_py = ndvi_stats.get('min')
+    max_py = ndvi_stats.get('max')
+    
+    if min_py is None or max_py is None:
+        # 如果任一極值為 None，表示該年份所有像素都被雲遮罩了
+        return {
+            'status': f"No data after cloud mask. (Cloud Cover: {mean_cloud_cover:.2f}%)",
+            'data': pd.DataFrame(),
+            'cloud_cover': mean_cloud_cover
+        }
+    
     # 將結果轉換為 EE Number
-    ndvi_min_val = ee.Number(ndvi_stats.get('min'))
-    ndvi_max_val = ee.Number(ndvi_stats.get('max'))
+    ndvi_min_val = ee.Number(min_py)
+    ndvi_max_val = ee.Number(max_py)
     
     # 6. 執行 LST 完整計算 (傳入動態極值)
     lst_celsius_image = calculate_lst_celsius_image(image, ndvi_min_val, ndvi_max_val)
