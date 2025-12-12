@@ -71,25 +71,30 @@ years = list(range(2019, 2026))
 L8_LAMBDA = 10.9 # Landsat 8 TIRS Band 10 有效波長 (μm)
 L8_RHO = 14388.0 / L8_LAMBDA 
 
-def calculate_lst_celsius_image(image):
+def calculate_lst_celsius_image(image, ndvi_min_val, ndvi_max_val):
     """
     實作 LST 完整計算流程 (NDVI -> FV -> EM -> LST)。
+    Args:
+        image: 經過 applyScaleFactors 處理的影像。
+        ndvi_min_val: 影像中的實際 NDVI 最小值 (Number)。
+        ndvi_max_val: 影像中的實際 NDVI 最大值 (Number)。
     """
     # 0. 提取預處理後的波段 (B5/NIR, B4/Red, LST_K/T_b)
     nir = image.select('SR_B5') 
     red = image.select('SR_B4') 
-    tb_kelvin = image.select('LST_K') # <-- Image 物件
+    tb_kelvin = image.select('LST_K') 
     
     # --- 步驟 1: 計算 NDVI ---
     ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI')
     
-    # 假設 NDVI 範圍常數 (避免 reduceRegion 帶來的運算超時)
-    NDVI_MAX = 0.8  
-    NDVI_MIN = 0.05 
-    
     # --- 步驟 2: 計算 Fractional Vegetation (FV) ---
-    fv_numerator = ndvi.subtract(NDVI_MIN)
-    fv_denominator = ee.Number(NDVI_MAX).subtract(NDVI_MIN)
+    # 使用傳入的動態極值
+    fv_numerator = ndvi.subtract(ndvi_min_val)
+    fv_denominator = ndvi_max_val.subtract(ndvi_min_val)
+    
+    # 處理分母為零的情況 (如果 min=max)
+    fv_denominator = fv_denominator.where(fv_denominator.eq(0), 1e-6)
+    
     fv = fv_numerator.divide(fv_denominator).pow(2).rename("FV")
     fv = fv.where(fv.lt(0.0), 0.0).where(fv.gt(1.0), 1.0)
     
@@ -100,7 +105,7 @@ def calculate_lst_celsius_image(image):
     # LST = T_b / (1 + (λ * T_b / ρ) * ln(ε))
     
     # 1. 計算 λ * T_b / ρ
-    rho_const_numerator = tb_kelvin.multiply(L8_LAMBDA) # <-- 修正：使用 Image.multiply(Number)
+    rho_const_numerator = tb_kelvin.multiply(L8_LAMBDA) 
     rho_const_factor = rho_const_numerator.divide(L8_RHO) 
     
     # 2. 乘以 ln(ε)
@@ -141,10 +146,27 @@ def get_l8_lst_data(year, grid_size=0.01):
     # 4. 取得平均雲量 (用來顯示)
     mean_cloud_cover = filtered_collection.aggregate_mean('CLOUD_COVER_LAND').getInfo()
     
-    # 5. 執行 LST 完整計算
-    lst_celsius_image = calculate_lst_celsius_image(image)
+    # 5. 【修正點】：動態計算 NDVI 範圍
+    # 必須先計算 NDVI
+    nir = image.select('SR_B5') 
+    red = image.select('SR_B4') 
+    ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI')
     
-    # 6. 定義網格並提取 LST 值
+    # 計算 NDVI 的 Min/Max 極值
+    ndvi_stats = ndvi.reduceRegion(
+        reducer=ee.Reducer.minMax(),
+        scale=30,
+        tileScale=8 # 使用 tileScale 確保穩定
+    ).getInfo()
+    
+    # 將結果轉換為 EE Number
+    ndvi_min_val = ee.Number(ndvi_stats.get('min'))
+    ndvi_max_val = ee.Number(ndvi_stats.get('max'))
+    
+    # 6. 執行 LST 完整計算 (傳入動態極值)
+    lst_celsius_image = calculate_lst_celsius_image(image, ndvi_min_val, ndvi_max_val)
+    
+    # 7. 定義網格並提取 LST 值
     grid_rects = []
     min_lon = region.bounds().getInfo()['coordinates'][0][0][0]
     min_lat = region.bounds().getInfo()['coordinates'][0][0][1]
@@ -162,16 +184,15 @@ def get_l8_lst_data(year, grid_size=0.01):
         
     grid_fc = ee.FeatureCollection(grid_rects)
     
-    # 3. 提取每個網格的平均 LST 值 (30m 解析度)
+    # 8. 提取每個網格的平均 LST 值 (30m 解析度)
     mean_lst_data = lst_celsius_image.reduceRegions(
         collection=grid_fc,
         reducer=ee.Reducer.mean(),
-        geometry=region, 
         scale=30, 
         tileScale=8 
     )
     
-    # 7. 將結果轉換為客戶端 DataFrame
+    # 9. 將結果轉換為客戶端 DataFrame
     lst_list = mean_lst_data.getInfo()['features']
     
     data = []
@@ -225,7 +246,7 @@ app = dash.Dash(__name__)
 
 # 佈局修改：使用表格來呈現網格數據
 app.layout = html.Div([
-    html.H1("Landsat 8 LST 網格分層設色分析 (穩定 Median 算法)",              
+    html.H1("Landsat 8 LST 網格分層設色分析 (最終修正穩定版)",              
              style={'textAlign': 'center', 'margin-bottom': '20px', 'color': '#2C3E50'}),
         
     # 滑桿控制區
