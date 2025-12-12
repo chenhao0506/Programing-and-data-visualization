@@ -37,237 +37,109 @@ ee.Initialize(credentials)
 print("Earth Engine 初始化成功")
 
 # ----------------------------------------------------
-# 2. GEE 穩定性輔助函數 (從 Streamlit 移植)
+# 2. GEE 參數定義與影像獲取函數 (Landsat 8 LST 準備)
 # ----------------------------------------------------
 
-def applyScaleFactors(image):
-    """應用 Landsat 8 L2 的光學和熱能縮放因子。"""
-    # 光學波段 (SR_B*)：SR = DN * 0.0000275 - 0.2
-    opticalBands = image.select('SR_B.').multiply(0.0000275).add(-0.2)
-    # 熱能波段 (ST_B10)：LST (K) = DN * 0.00341802 + 149.0
-    thermalBands = image.select('ST_B10').multiply(0.00341802).add(149.0).rename('LST_K')
-    return image.addBands(opticalBands, overwrite=True).addBands(thermalBands, overwrite=True)
+# Landsat 8 L2 TIRS (Band 10) 轉為亮度溫度的函數
+def apply_landsat_temp_scale(image):
+    """
+    將 Landsat 8 C2 L2 的熱紅外線波段 (ST_B10) DN 值轉換為亮度溫度 (Kelvin, K)。
+    需要使用元數據中的 K1 和 K2 參數。
+    """
+    # L2 集合中，Band 10 已經是經過大氣校正的地表溫度 (ST_B10)，
+    # 但為了計算 LST，我們需要先獲得亮度溫度 (TB)。
+    # 
+    # 註：此處我們將直接使用 GEE 推薦的 LST 轉換函數，
+    # 但由於 L2 集合已經有經過大氣校正的地表溫度 (ST_B10)，
+    # 我們將先確保 ST_B10 數值被正確縮放。
 
-def cloudMask(image):
-    """應用雲和雲陰影遮罩。"""
-    cloud_shadow_bitmask = (1 << 3)
-    cloud_bitmask = (1 << 5)
-    qa = image.select('QA_PIXEL')
-    mask = qa.bitwiseAnd(cloud_shadow_bitmask).eq(0).And(
-                         qa.bitwiseAnd(cloud_bitmask).eq(0))
-    # 更新遮罩，並保留 Landsat 的 metadata 屬性
-    return image.updateMask(mask).copyProperties(image, ['CLOUD_COVER_LAND'])
+    # C2 L2 集合的 ST_B10 波段，其縮放因子為 0.00341802 + 149.0
+    # 但這個波段已經是 Kelvin 溫度，我們只需要縮放它。
+    thermal = image.select('ST_B10')
+    
+    # L2 集合中，ST_B10 的縮放公式是：(DN * 0.00341802) + 149.0
+    tb = thermal.multiply(0.00341802).add(149.0).rename('TB')
+    
+    # 確保 SR 波段也被正確縮放 (SR_B4, SR_B3, SR_B2)
+    optical_bands = image.select('SR_B4', 'SR_B3', 'SR_B2')
+    # SR 波段的縮放公式：(DN * 0.0000275) + (-0.2)
+    scaled_optical = optical_bands.multiply(0.0000275).add(-0.2).rename('SR_B4', 'SR_B3', 'SR_B2')
+    
+    # 將縮放後的 TB 和 SR 波段合併
+    return image.addBands(tb).addBands(scaled_optical)
 
-
-# ----------------------------------------------------
-# 3. LST 算法定義與數據提取
-# ----------------------------------------------------
-
-# 定義研究範圍 (彰化縣的局部區域)
-region = ee.Geometry.Rectangle([120.24, 23.77, 120.69, 24.20])
+# 定義研究範圍與年份 (彰化縣的局部區域)
+region = ee.Geometry.Rectangle([120.49, 23.92, 120.65, 24.10])
+# 年份範圍調整為 2019 到 2025
 years = list(range(2019, 2026)) 
 
-# LST 算法參數定義
-L8_LAMBDA = 10.9 # Landsat 8 TIRS Band 10 有效波長 (μm)
-L8_RHO = 14388.0 / L8_LAMBDA 
+# Landsat 8/9 L2 LST 可視化參數 (攝氏度，從 20C 到 40C)
+VIS_PARAMS = {
+    # 顯示 LST 結果 (TB 是 LST 的預備步驟)
+    'bands': ['TB'], 
+    'min': 293.15, # 20 攝氏度 (273.15 + 20)
+    'max': 313.15, # 40 攝氏度 (273.15 + 40)
+    'palette': ['blue', 'cyan', 'green', 'yellow', 'red'] # 冷到熱
+}
 
-def calculate_lst_celsius_image(image, ndvi_min_val, ndvi_max_val):
+def get_l8_july_image(year):
     """
-    實作 LST 完整計算流程 (NDVI -> FV -> EM -> LST)。
-    Args:
-        image: 經過 applyScaleFactors 處理的影像。
-        ndvi_min_val: 影像中的實際 NDVI 最小值 (Number)。
-        ndvi_max_val: 影像中的實際 NDVI 最大值 (Number)。
-    """
-    # 0. 提取預處理後的波段 (B5/NIR, B4/Red, LST_K/T_b)
-    nir = image.select('SR_B5') 
-    red = image.select('SR_B4') 
-    tb_kelvin = image.select('LST_K') 
-    
-    # --- 步驟 1: 計算 NDVI ---
-    ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI')
-    
-    # --- 步驟 2: 計算 Fractional Vegetation (FV) ---
-    # 使用傳入的動態極值
-    fv_numerator = ndvi.subtract(ndvi_min_val)
-    fv_denominator = ndvi_max_val.subtract(ndvi_min_val)
-    
-    # 處理分母為零的情況 (如果 min=max)
-    fv_denominator = fv_denominator.where(fv_denominator.eq(0), 1e-6)
-    
-    fv = fv_numerator.divide(fv_denominator).pow(2).rename("FV")
-    fv = fv.where(fv.lt(0.0), 0.0).where(fv.gt(1.0), 1.0)
-    
-    # --- 步驟 3: 計算 Land Surface Emissivity (EM) ---
-    em = fv.multiply(0.004).add(0.986).rename("EM")
-    
-    # --- 步驟 4: 計算 Land Surface Temperature (LST) ---
-    # LST = T_b / (1 + (λ * T_b / ρ) * ln(ε))
-    
-    # 1. 計算 λ * T_b / ρ
-    rho_const_numerator = tb_kelvin.multiply(L8_LAMBDA) 
-    rho_const_factor = rho_const_numerator.divide(L8_RHO) 
-    
-    # 2. 乘以 ln(ε)
-    rho_const = rho_const_factor.multiply(em.log())
-    
-    # 3. LST (Kelvin) = T_b / (1 + [rho_const])
-    lst_kelvin = tb_kelvin.divide(ee.Number(1).add(rho_const))
-    
-    # 轉換為攝氏度: T(°C) = T(K) - 273.15
-    lst_celsius = lst_kelvin.subtract(273.15).rename('LST_C')
-    
-    return lst_celsius.clip(region)
-
-
-def get_l8_lst_data(year, grid_size=0.01):
-    """
-    使用 median 聚合的穩定 LST 數據獲取函數。
+    取得指定年份七月雲量百分比最低的 Landsat 8 影像，並進行 TB 轉換。
     """
     
-    # 1. 建立 L8 集合並過濾
     collection = (
         ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
         .filterBounds(region)
-        .filterDate(f"{year}-06-01", f"{year}-08-31") 
+        .filterDate(f"{year}-01-01", f"{year}-07-31") 
+        .sort('CLOUD_COVER') 
     )
     
-    # 2. 應用雲遮罩和縮放因子 (只保留雲量低的影像)
-    filtered_collection = collection.filterMetadata('CLOUD_COVER_LAND', 'less_than', 80)
-    
-    size = filtered_collection.size().getInfo()
+    size = collection.size().getInfo()
     if size == 0:
-        return {'status': f"No Landsat 8 images found for {year} (Cloud < 80%)"}
+        print(f"Warning: No Landsat 8 images found for {year} (Jan-Jul).")
+        return None
     
-    # 3. 處理集合: 縮放，雲遮罩，然後中位數聚合 (更穩定)
-    processed_collection = filtered_collection.map(applyScaleFactors).map(cloudMask)
-    image = processed_collection.median() # 中位數聚合
+    image = collection.first()
     
-# 4. 取得平均雲量 (用來顯示)
-    mean_cloud_cover = filtered_collection.aggregate_mean('CLOUD_COVER_LAND').getInfo()
+    if image is None:
+        print(f"Warning: Landsat 8 image is void for {year} (Jan-Jul).")
+        return None
     
-    # 5. 動態計算 NDVI 範圍 (檢查影像是否空白)
+    # 步驟 1: 應用 TB 和 SR 波段的縮放
+    scaled_image = apply_landsat_temp_scale(image)
+
+    # 步驟 2: 裁剪並將原始元數據複製到縮放後的影像上 (確保 CLOUD_COVER 存在)
+    final_image = scaled_image.clip(region)
+    final_image = final_image.set(image.toDictionary())
     
-    # 必須先計算 NDVI
-    nir = image.select('SR_B5') 
-    red = image.select('SR_B4') 
-    ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI')
-    
-    # 計算 NDVI 的 Min/Max 極值
-    ndvi_stats = ndvi.reduceRegion(
-        reducer=ee.Reducer.minMax(),
-        geometry=region, 
-        scale=30,
-        tileScale=8 
-    ).getInfo()
-    
-    # === 關鍵修正：檢查統計結果是否為 None ===
-    min_py = ndvi_stats.get('min')
-    max_py = ndvi_stats.get('max')
-    
-    if min_py is None or max_py is None:
-        # 如果任一極值為 None，表示該年份所有像素都被雲遮罩了
-        return {
-            'status': f"No data after cloud mask. (Cloud Cover: {mean_cloud_cover:.2f}%)",
-            'data': pd.DataFrame(),
-            'cloud_cover': mean_cloud_cover
-        }
-    
-    # 將結果轉換為 EE Number
-    ndvi_min_val = ee.Number(min_py)
-    ndvi_max_val = ee.Number(max_py)
-    
-    # 6. 執行 LST 完整計算 (傳入動態極值)
-    lst_celsius_image = calculate_lst_celsius_image(image, ndvi_min_val, ndvi_max_val)
-    
-    # 7. 定義網格並提取 LST 值
-    grid_rects = []
-    min_lon = region.bounds().getInfo()['coordinates'][0][0][0]
-    min_lat = region.bounds().getInfo()['coordinates'][0][0][1]
-    max_lon = region.bounds().getInfo()['coordinates'][0][2][0]
-    max_lat = region.bounds().getInfo()['coordinates'][0][2][1]
-    
-    lon = min_lon
-    while lon < max_lon:
-        lat = min_lat
-        while lat < max_lat:
-            rect = ee.Geometry.Rectangle([lon, lat, lon + grid_size, lat + grid_size])
-            grid_rects.append(rect)
-            lat += grid_size
-        lon += grid_size
+    # 檢查最終影像是否有效 (檢查 TB 波段)
+    try:
+        # 檢查 TB 波段是否存在
+        if final_image.select('TB').bandNames().size().getInfo() == 0:
+            print(f"Warning: Final image processing failed or TB band is missing for {year}.")
+            return None
+    except Exception:
+        print(f"Warning: GEE image processing failed for {year}.")
+        return None
         
-    grid_fc = ee.FeatureCollection(grid_rects)
-    
-    # 8. 提取每個網格的平均 LST 值 (30m 解析度)
-    mean_lst_data = lst_celsius_image.reduceRegions(
-        collection=grid_fc,
-        reducer=ee.Reducer.mean(),
-        scale=30, 
-        tileScale=8 
-    )
-    
-    # 9. 將結果轉換為客戶端 DataFrame
-    lst_list = mean_lst_data.getInfo()['features']
-    
-    data = []
-    for feature in lst_list:
-        mean_val = feature['properties'].get('LST_C')
-        if mean_val is not None:
-            bounds = feature['geometry']['coordinates'][0][0] 
-            data.append({
-                'LST_C': mean_val,
-                'lon_c': bounds[0],
-                'lat_c': bounds[1]
-            })
+    # 返回包含 TB 和 SR 波段的最終影像
+    return final_image
 
-    df = pd.DataFrame(data)
-    
-    return {
-        'status': 'success',
-        'data': df,
-        'cloud_cover': mean_cloud_cover
-    }
 
 # ----------------------------------------------------
-# 4. 視覺化輔助函數：將溫度轉換為顏色
+# 3. Dash App 建立
 # ----------------------------------------------------
-
-def get_color(temp, min_temp, max_temp):
-    """根據溫度值返回一個 HTML 顏色碼 (模擬分層設色圖)。"""
-    
-    temp_range = max_temp - min_temp
-    
-    if temp_range <= 0:
-        return '#dc3545' 
-        
-    normalized_temp = (temp - min_temp) / temp_range
-    
-    # 根據標準化範圍賦予顏色 (四分位)
-    if normalized_temp >= 0.75: 
-        return '#dc3545' # 紅色 (最高溫)
-    elif normalized_temp >= 0.5: 
-        return '#ffc107' # 黃色 (中高溫)
-    elif normalized_temp >= 0.25: 
-        return '#28a745' # 綠色 (中低溫)
-    else: 
-        return '#007bff' # 藍色 (最低溫)
-
-# ----------------------------------------------------
-# 5. Dash App 建立
-# ----------------------------------------------------
-
 app = dash.Dash(__name__)
 
-# 佈局修改：使用表格來呈現網格數據
 app.layout = html.Div([
-    html.H1("Landsat 8 LST 網格分層設色分析 (最終修正穩定版)",              
+    html.H1("Landsat 8 LST 亮度溫度瀏覽器 (Kelvin) - GEE/Dash", 
              style={'textAlign': 'center', 'margin-bottom': '20px', 'color': '#2C3E50'}),
-        
+    
     # 滑桿控制區
     html.Div([
-        html.H3(id='year-display', children=f"當前年份: {max(years)}",                  
+        html.H3(id='year-display', children=f"當前年份: {max(years)} (查詢 1月-7月)", 
                  style={'textAlign': 'center', 'color': '#34495E'}),
-                
+        
         dcc.Slider(
             id='year-slider',
             min=min(years),
@@ -278,116 +150,86 @@ app.layout = html.Div([
             tooltip={"placement": "bottom", "always_visible": True}
         ),
     ], style={'padding': '20px', 'width': '80%', 'margin': '0 auto', 'background-color': '#ECF0F1', 'border-radius': '8px'}),
-        
+    
     html.Hr(style={'margin-top': '30px', 'margin-bottom': '30px'}),
     
-    # 輸出區：顯示 LST 網格和中繼資料
+    # 圖片顯示區
     dcc.Loading(
-        id="loading-grid",
+        id="loading-image",
         type="circle",
-        children=html.Div(id='data-output', style={'padding': '20px', 'width': '90%', 'margin': '0 auto'})
+        children=html.Img(
+            id='satellite-image', 
+            style={
+                'width': '80%', 
+                'height': 'auto', 
+                'display': 'block', 
+                'margin': '0 auto', 
+                'border': '5px solid #3498DB',
+                'border-radius': '8px'
+            }
+        )
     )
 ])
 
 # ----------------------------------------------------
-# 6. Callback：根據滑桿值計算並顯示 LST 網格數據
+# 4. Callback：根據滑桿值更新影像
 # ----------------------------------------------------
 @app.callback(
-    [dash.Output('data-output', 'children'),
+    [dash.Output('satellite-image', 'src'),
      dash.Output('year-display', 'children')],
     [dash.Input('year-slider', 'value')]
 )
-def display_lst_grid(selected_year):
+def update_image(selected_year):
     
     print(f"Callback triggered for year: {selected_year}")
     
-    # 呼叫 LST 數據獲取函數
-    result = get_l8_lst_data(selected_year)
+    image = get_l8_july_image(selected_year)
     
-    if result['status'] != 'success':
-        status_text = f"當前年份: {selected_year} (錯誤)"
-        output_text = html.Div(result['status'], style={'color': 'red', 'fontSize': '20px'})
-        return output_text, status_text
+    url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' 
+    cloud_cover_display = "N/A (處理中)" 
 
-    df = result['data']
-    cloud_cover = result['cloud_cover']
-    
-    if df.empty:
-        status_text = f"當前年份: {selected_year} (無有效 LST 數據)"
-        output_text = html.Div("無有效 LST 數據，請檢查雲量或區域。", style={'color': 'red', 'fontSize': '20px'})
-        return output_text, status_text
+    if image is not None:
         
-    min_temp = df['LST_C'].min()
-    max_temp = df['LST_C'].max()
-    
-    # 確定表格結構
-    lons = df['lon_c'].unique()
-    lats = df['lat_c'].unique()
-    
-    # 創建表格內容
-    table_rows = []
-    
-    # 根據緯度排序（從北到南）
-    for lat in sorted(lats, reverse=True):
-        row_data = []
-        for lon in sorted(lons, reverse=False):
-            cell = df[(df['lat_c'] == lat) & (df['lon_c'] == lon)]
+        # 步驟 A: 嘗試獲取雲量和日期資訊
+        try:
+            cloud_cover = image.get('CLOUD_COVER').getInfo()
+            date_info = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd').getInfo()
             
-            if not cell.empty:
-                temp = cell['LST_C'].iloc[0]
-                color = get_color(temp, min_temp, max_temp)
-                
-                cell_content = html.Div(
-                    f"{temp:.1f}", 
-                    style={
-                        'backgroundColor': color,
-                        'padding': '10px',
-                        'margin': '2px',
-                        'width': '60px',
-                        'height': '30px',
-                        'textAlign': 'center',
-                        'color': 'white',
-                        'fontWeight': 'bold',
-                        'lineHeight': '10px'
-                    },
-                    # 模擬鼠標懸停效果 (title 屬性)
-                    title=f"LST: {temp:.2f}°C"
-                )
+            if cloud_cover is not None:
+                cloud_cover_display = f"{cloud_cover:.2f}"
             else:
-                cell_content = html.Div('', style={'padding': '10px', 'margin': '2px', 'width': '60px', 'height': '30px', 'backgroundColor': '#f8f9fa'})
-            
-            row_data.append(cell_content)
-            
-        table_rows.append(html.Div(row_data, style={'display': 'flex', 'justifyContent': 'center'}))
+                cloud_cover_display = "N/A (值為空)"
+        except Exception as e:
+            print(f"Warning: Failed to retrieve CLOUD_COVER/Date for year {selected_year}. Error: {e}")
+            date_info = "N/A"
 
-    
-    # 輸出結果
-    status_text = f"當前年份: {selected_year} (Landsat 8 LST 網格計算完成，平均雲量: {cloud_cover:.2f}%)"
-    
-    output_content = html.Div([
-        html.P(f" Landsat 8 LST 網格分析結果 ({selected_year} 年 6-8 月):", style={'fontSize': '20px', 'fontWeight': 'bold', 'marginTop': '10px'}),
-        html.P(f"全區域 LST 範圍: {min_temp:.2f}°C ~ {max_temp:.2f}°C", style={'fontSize': '16px', 'marginBottom': '20px'}),
+        # 步驟 B: 嘗試生成縮圖 URL
+        try:
+            thumb_params = VIS_PARAMS.copy()
+            thumb_params['scale'] = 60 # 調整回 60m 試試穩定性
+            thumb_params['region'] = region.getInfo()
+            
+            # 使用 geemap.get_image_url 確保穩定性
+            url = geemap.get_image_url(image.select('TB'), **thumb_params)
+
+            # 狀態顯示提示當前顯示的是亮度溫度 (Kelvin)
+            status_text = f"當前年份: {selected_year} (TB 載入日期: {date_info} | 雲量: {cloud_cover_display}%)"
+
+        except ee.ee_exception.EEException as e:
+            print(f"GEE Thumbnail Generation Error: {e}")
+            status_text = f"當前年份: {selected_year} (GEE 影像處理錯誤：{e})"
         
-        # LST 網格表格
-        html.Div(table_rows, style={'width': 'fit-content', 'margin': '0 auto', 'border': '1px solid #ccc'}),
+        except Exception as e:
+            print(f"General Thumbnail Error: {e}")
+            status_text = f"當前年份: {selected_year} (載入成功，但縮圖 URL 產生失敗)"
+
+    else:
+        status_text = f"當前年份: {selected_year} (錯誤：該時段無 Landsat 8 影像可用 (1月-7月))"
         
-        # 圖例 (簡單版)
-        html.Div([
-            html.P("圖例 (基於全區域溫差的四分位):", style={'marginTop': '30px', 'fontWeight': 'bold'}),
-            html.Div([
-                html.Div("最高溫 (Q4)", style={'backgroundColor': '#dc3545', 'padding': '5px', 'marginRight': '10px', 'color': 'white'}),
-                html.Div("中高溫 (Q3)", style={'backgroundColor': '#ffc107', 'padding': '5px', 'marginRight': '10px', 'color': 'black'}),
-                html.Div("中低溫 (Q2)", style={'backgroundColor': '#28a745', 'padding': '5px', 'marginRight': '10px', 'color': 'white'}),
-                html.Div("最低溫 (Q1)", style={'backgroundColor': '#007bff', 'padding': '5px', 'marginRight': '10px', 'color': 'white'}),
-            ], style={'display': 'flex', 'justifyContent': 'center'}),
-        ])
-    ])
-    
-    return output_content, status_text
+    return url, status_text
 
 # ----------------------------------------------------
-# 7. Dash App 啟動 (使用你指定的格式)
+# 5. Dash App 啟動 (使用你指定的格式)
 # ----------------------------------------------------
 if __name__ == '__main__':
-    PORT = int(os.environ.get('PORT', 7860))
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    app.run(host="0.0.0.0", port=7860, debug=False)
