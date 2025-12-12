@@ -39,15 +39,12 @@ print("Earth Engine 初始化成功")
 # 2. GEE 參數定義與影像獲取函數 (Landsat 8/9, 30m 解析度)
 # ----------------------------------------------------
 
-# 移除 mask_l8_clouds 函數，因為我們將使用 CLOUD_COVER 篩選。
-
 # 定義研究範圍與年份 (彰化縣的局部區域)
 region = ee.Geometry.Rectangle([120.49, 23.92, 120.65, 24.10])
 # 年份範圍調整為 2019 到 2025
 years = list(range(2019, 2026)) 
 
 # Landsat 8/9 L2 (Surface Reflectance) 可視化參數 (自然色)
-# 波段名稱已修正為 L2 SR 集合使用的 'SR_B*' 格式。
 VIS_PARAMS = {
     'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 
     'min': 0, 
@@ -57,50 +54,46 @@ VIS_PARAMS = {
 
 def get_l8_july_image(year):
     """
-    【修正邏輯】取得指定年份七月雲量百分比最低的 Landsat 8 影像。
-    採用 .sort('CLOUD_COVER').first() 替代中位數聚合。
+    取得指定年份七月雲量百分比最低的 Landsat 8 影像。
+    新增關鍵步驟：將原始影像的中繼資料複製到縮放後的影像上。
     """
     
-    # 集合 ID 維持 'LANDSAT/LC08/C02/T1_L2' (Landsat 8 Collection 2 Level 2)
     collection = (
         ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
         .filterBounds(region)
         .filterDate(f"{year}-07-01", f"{year}-07-31") 
-        
-        # 關鍵修正 1: 根據影像中繼資料中的 CLOUD_COVER 欄位排序，並選取雲量最低的第一張影像。
         .sort('CLOUD_COVER') 
     )
     
-    # 檢查是否有足夠的影像
     size = collection.size().getInfo()
     if size == 0:
         print(f"Warning: No Landsat 8 images found for July {year}.")
         return None
     
+    # 原始影像 (包含 metadata 和 DN 值)
     image = collection.first()
     
-    # 檢查影像是否為空
     if image is None:
         print(f"Warning: Landsat 8 image is void for July {year}.")
         return None
     
-    # 關鍵修正 2: 由於 Landsat L2 SR 影像使用整數 (DN 值)，
-    # 為了與 VIS_PARAMS (min=0, max=0.3) 匹配，我們需要將 DN 值轉換為實際反射率 (0-1)。
-    # 公式：Reflectance = (DN * 0.0000275) + (-0.2)
-    def apply_scale_factors(img):
-        # 僅選擇我們需要的 SR 波段
-        optical_bands = img.select('SR_B4', 'SR_B3', 'SR_B2')
-        # 應用縮放因子
-        scaled_bands = optical_bands.multiply(0.0000275).add(-0.2)
-        # 返回裁剪後的縮放影像
-        return scaled_bands.clip(region).rename('SR_B4', 'SR_B3', 'SR_B2')
+    
+    # 步驟 1: 選擇 SR 波段並應用縮放因子 (DN -> 反射率)
+    # Reflectance = (DN * 0.0000275) + (-0.2)
+    final_image = (
+        image.select('SR_B4', 'SR_B3', 'SR_B2')
+        .multiply(0.0000275)
+        .add(-0.2)
+        # 裁剪操作在這裡執行
+        .clip(region)
+    )
 
-    # 應用縮放並裁剪
-    final_image = apply_scale_factors(image)
+    # 步驟 2: 【關鍵修正】將原始影像的元數據複製到縮放後的影像上
+    # 這確保了 'CLOUD_COVER' 屬性會被保留。
+    final_image = final_image.set(image.toDictionary())
     
     # 檢查最終影像是否有效
     try:
-        # 檢查 SR_B4 波段是否存在，確認影像處理成功
         if final_image.select('SR_B4').bandNames().size().getInfo() == 0:
             print(f"Warning: Final image processing failed or band is missing for July {year}.")
             return None
@@ -108,8 +101,7 @@ def get_l8_july_image(year):
         print(f"Warning: GEE image processing failed for July {year}.")
         return None
         
-    # 返回最終影像 (已縮放為 0-1 的反射率)
-    return final_image.select('SR_B4', 'SR_B3', 'SR_B2')
+    return final_image
 
 
 # ----------------------------------------------------
@@ -171,41 +163,47 @@ def update_image(selected_year):
     
     image = get_l8_july_image(selected_year)
     
-    cloud_cover_display = "N/A" # 預設值
+    url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' # 預設為透明圖
+    cloud_cover_display = "N/A (中繼資料錯誤)" 
 
     if image is not None:
+        
+        # 步驟 A: 嘗試獲取雲量資訊 (現在應會成功)
         try:
-            thumb_params = VIS_PARAMS.copy()
-            
-            # 解析度維持 60m 
-            thumb_params['scale'] = 60 
-            thumb_params['region'] = region.getInfo()
-            
-            # 【修正點 1】嘗試獲取 CLOUD_COVER 資訊，如果失敗，則保持預設值 "N/A"
-            # 使用 .getInfo() 獲取元數據，這可能會拋出錯誤
+            # 嘗試執行 GEE 遠端呼叫以獲取 CLOUD_COVER
             cloud_cover = image.get('CLOUD_COVER').getInfo()
             if cloud_cover is not None:
                 cloud_cover_display = f"{cloud_cover:.2f}"
+            else:
+                cloud_cover_display = "N/A (值為空)"
+        except Exception as e:
+            # 捕獲所有獲取 metadata 時的錯誤 
+            print(f"Warning: Failed to retrieve CLOUD_COVER for year {selected_year}. Error: {e}")
+            # cloud_cover_display 維持預設值 "N/A (中繼資料錯誤)"
+
+        # 步驟 B: 嘗試生成縮圖 URL
+        try:
+            thumb_params = VIS_PARAMS.copy()
+            thumb_params['scale'] = 60 
+            thumb_params['region'] = region.getInfo()
             
-            # 【修正點 2】在確保獲取雲量資訊後，才嘗試獲取縮圖 URL
+            # 生成縮圖 URL (這將觸發實際的影像處理)
             url = image.getThumbURL(thumb_params)
 
-            status_text = f"當前年份: {selected_year} ( Landsat 8 載入成功，雲量: {cloud_cover_display}% )"
-        
+            status_text = f"當前年份: {selected_year} (Landsat 8 載入成功，雲量: {cloud_cover_display}%)"
+
         except ee.ee_exception.EEException as e:
-            # 捕獲 GEE 錯誤
-            url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+            # 捕獲 GEE 影像處理錯誤 (e.g., 內存不足)
+            print(f"GEE Thumbnail Generation Error: {e}")
             status_text = f"當前年份: {selected_year} (GEE 影像處理錯誤：{e})"
         
         except Exception as e:
-            # 【修正點 3】捕獲其他錯誤，例如獲取 .getInfo() 失敗
-            print(f"Error retrieving metadata or thumbnail URL: {e}")
-            url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
-            status_text = f"當前年份: {selected_year} ( Landsat 8 載入成功，但無法取得雲量資訊，請嘗試重新載入 )"
-    
+            # 捕獲其他錯誤
+            print(f"General Thumbnail Error: {e}")
+            status_text = f"當前年份: {selected_year} (載入成功，但縮圖 URL 產生失敗)"
+
     else:
         # 如果找不到影像
-        url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
         status_text = f"當前年份: {selected_year} (錯誤：該時段無 Landsat 8 影像可用)"
         
     return url, status_text
