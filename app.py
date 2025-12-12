@@ -155,6 +155,7 @@ def get_l8_lst_data(year, grid_size=0.01):
     # 計算 NDVI 的 Min/Max 極值
     ndvi_stats = ndvi.reduceRegion(
         reducer=ee.Reducer.minMax(),
+        geometry=region,
         scale=30,
         tileScale=8 # 使用 tileScale 確保穩定
     ).getInfo()
