@@ -83,7 +83,7 @@ def get_l8_july_image(year):
     # *** 關鍵修正 1: 影像集合更改為 Landsat 8 Collection 2 Tier 1 Surface Reflectance ***
     # Landsat 8 的 Collection ID
     collection = (
-        ee.ImageCollection("LANDSAT/LC08/C02/T1_SR") 
+        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
         .filterBounds(region)
         .filterDate(f"{year}-07-01", f"{year}-07-31") 
         # L8/L9 不需要 CLOUDY_PIXEL_PERCENTAGE 過濾，因為 QA_PIXEL 更可靠
