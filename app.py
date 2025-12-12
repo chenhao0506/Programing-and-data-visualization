@@ -36,30 +36,29 @@ ee.Initialize(credentials)
 print("Earth Engine 初始化成功")
 
 # ----------------------------------------------------
-# 2. GEE 參數定義與影像獲取函數 (Landsat 8, 30m 解析度)
+# 2. GEE 參數定義與影像獲取函數 (Landsat 8/9, 30m 解析度)
 # ----------------------------------------------------
-# 
 
 def mask_l8_clouds(image):
-    """使用 Landsat 8 的 QA 波段 (pixel_qa)，遮蔽雲和雲陰影。"""
-    # Landsat 8/9 Collection 2 Level-2 影像集合
+    """
+    【放寬後的雲層遮蔽條件】
+    使用 Landsat 8/9 的 QA_PIXEL 波段，僅遮蔽高信賴度雲 (Bit 6) 和雲陰影 (Bit 3)。
+    移除對擴散雲 (Dilated Cloud, Bit 1) 的遮蔽，以保留更多影像。
+    """
     qa = image.select('QA_PIXEL')
     
-    # 雲的位元遮罩：
-    # Bit 3: 雲陰影 (Cloud Shadow)
-    # Bit 5: 雲 (Cloud)
-    cloud_shadow_bit = 1 << 3 # 二進位 00001000
-    cloud_bit = 1 << 5        # 二進位 00100000
+    # QA 位元定義 (需要遮蔽的位元):
+    cloud_shadow_bit = 1 << 3  # Bit 3: 雲陰影 (Cloud Shadow)
+    cloud_conf_bit = 1 << 6    # Bit 6: 高信賴度雲 (High Confidence Cloud)
+    # 移除 Dilated Cloud (Bit 1) 的遮蔽
     
-    # 建立遮罩：若 QA 位元不是雲或雲陰影，則為 True (保留)
+    # 建立遮罩：僅保留所有位元皆為 0 (乾淨) 的像素。
     is_cloud_shadow = qa.bitwiseAnd(cloud_shadow_bit).eq(0)
-    is_cloud = qa.bitwiseAnd(cloud_bit).eq(0)
+    is_cloud_conf = qa.bitwiseAnd(cloud_conf_bit).eq(0)
     
-    # 結合遮罩 (僅保留兩個條件都滿足的像素)
-    mask = is_cloud_shadow.And(is_cloud)
+    # 結合遮罩 (所有條件都必須是 True/乾淨)
+    mask = is_cloud_shadow.And(is_cloud_conf)
     
-    # Landsat 8 SR 影像需要 *0.0000275 + -0.2 才能轉換為反射率，
-    # 但為了簡化，我們只應用遮罩，並在 VIS_PARAMS 中處理視覺化範圍。
     return image.updateMask(mask)
     
 
@@ -68,42 +67,38 @@ region = ee.Geometry.Rectangle([120.49, 23.92, 120.65, 24.10])
 # 年份範圍調整為 2019 到 2025
 years = list(range(2019, 2026)) 
 
-# Landsat 8 L2 (Surface Reflectance) 可視化參數 (自然色)
+# Landsat 8/9 L2 (Surface Reflectance) 可視化參數 (自然色)
 VIS_PARAMS = {
-    # Landsat 8/9 的自然色波段為 B4 (Red), B3 (Green), B2 (Blue)
     'bands': ['B4', 'B3', 'B2'], 
     'min': 5000, 
-    'max': 20000, # L8 SR 範圍 0-65535，使用 5000-20000 (對應反射率 0.1375-0.55)
+    'max': 20000,
     'gamma': 1.4
 }
 
 def get_l8_july_image(year):
-    """取得指定年份七月經過雲層遮蔽的 Landsat 8 影像中位數 (30米解析度)。"""
+    """取得指定年份七月經過雲層遮蔽的 Landsat 8/9 影像中位數 (30米解析度)。"""
     
-    # *** 關鍵修正 1: 影像集合更改為 Landsat 8 Collection 2 Tier 1 Surface Reflectance ***
-    # Landsat 8 的 Collection ID
+    # 集合 ID 維持 'LANDSAT/C02/T1_L2' (L8/L9 混合)
     collection = (
-        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
+        ee.ImageCollection("LANDSAT/C02/T1_L2") 
         .filterBounds(region)
         .filterDate(f"{year}-07-01", f"{year}-07-31") 
-        # L8/L9 不需要 CLOUDY_PIXEL_PERCENTAGE 過濾，因為 QA_PIXEL 更可靠
         
-        # 應用 Landsat 8 雲層遮蔽 (使用 QA_PIXEL)
+        # 應用放寬後的雲層遮蔽
         .map(mask_l8_clouds)
     )
     
     # 檢查是否有足夠的影像
     size = collection.size().getInfo()
     if size == 0:
-        print(f"Warning: No Landsat 8 images found for July {year}.")
+        print(f"Warning: No Landsat 8/9 images found for July {year} after cloud masking.")
         return None
     
-    # *** 關鍵修正 2: 使用中位數聚合 (.median()) ***
+    # 使用中位數聚合 (.median())
     image = collection.median()
     
     # 檢查 median 聚合結果是否為全 NULL
     try:
-        # 使用 select() 確保至少有 RGB 波段
         if image.select('B4').bandNames().size().getInfo() == 0:
             print(f"Warning: Median image contains no valid data for July {year}.")
             return None
@@ -111,17 +106,17 @@ def get_l8_july_image(year):
         print(f"Warning: GEE image processing failed for July {year}. Result is likely void.")
         return None
         
-    # 裁剪並選擇 RGB 波段 (L8 波段名稱 B4/B3/B2)
+    # 裁剪並選擇 RGB 波段 (B4/B3/B2)
     return image.clip(region).select('B4', 'B3', 'B2')
 
 
 # ----------------------------------------------------
-# 3. Dash App 建立 (此處無須修改)
+# 3. Dash App 建立
 # ----------------------------------------------------
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
-    html.H1("Landsat 8 七月衛星影像瀏覽器 (30m 解析度) - GEE/Dash", 
+    html.H1("Landsat 8/9 七月衛星影像瀏覽器 (放寬條件) - GEE/Dash", 
              style={'textAlign': 'center', 'margin-bottom': '20px', 'color': '#2C3E50'}),
     
     # 滑桿控制區
@@ -172,21 +167,19 @@ def update_image(selected_year):
     
     print(f"Callback triggered for year: {selected_year}")
     
-    # *** 關鍵修正 3: 呼叫 Landsat 8 的影像獲取函數 ***
     image = get_l8_july_image(selected_year)
     
     if image is not None:
         try:
-            # 傳遞 VIS_PARAMS 和其他參數
             thumb_params = VIS_PARAMS.copy()
             
-            # 使用 30m/px 的 scale (L8 原生解析度)
-            thumb_params['scale'] = 30 
+            # 【關鍵放寬 1】：解析度從 30m 調整為 60m，降低 GEE 負載
+            thumb_params['scale'] = 60 
             thumb_params['region'] = region.getInfo()
             
             url = image.getThumbURL(thumb_params)
 
-            status_text = f"當前年份: {selected_year} (Landsat 8 影像載入成功, 30m)"
+            status_text = f"當前年份: {selected_year} (Landsat 8/9 影像載入成功, 60m 解析度)"
         except ee.ee_exception.EEException as e:
             # 捕獲 GEE 錯誤
             url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
@@ -194,7 +187,7 @@ def update_image(selected_year):
     else:
         # 如果找不到影像
         url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
-        status_text = f"當前年份: {selected_year} (錯誤：該時段無足夠高品質 Landsat 8 影像)"
+        status_text = f"當前年份: {selected_year} (錯誤：該時段無足夠高品質 Landsat 8/9 影像)"
         
     return url, status_text
 
