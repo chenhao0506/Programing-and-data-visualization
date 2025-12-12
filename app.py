@@ -36,13 +36,13 @@ ee.Initialize(credentials)
 print("Earth Engine 初始化成功")
 
 # ----------------------------------------------------
-# 2. GEE 參數定義與影像獲取函數 (Landsat 8 LST 準備)
+# 2. GEE 參數定義與影像獲取函數 (Landsat 8/9 LST 準備)
 # ----------------------------------------------------
 
 # Landsat 8 L2 TIRS (Band 10) 轉為亮度溫度的函數
 def apply_landsat_temp_scale(image):
     """
-    將 Landsat 8 C2 L2 的熱紅外線波段 (ST_B10) DN 值轉換為亮度溫度 (Kelvin, K)。
+    將 Landsat 8/9 C2 L2 的熱紅外線波段 (ST_B10) DN 值轉換為亮度溫度 (Kelvin, K)。
     """
     # L2 集合中，ST_B10 的縮放公式是：(DN * 0.00341802) + 149.0
     thermal = image.select('ST_B10')
@@ -63,7 +63,6 @@ years = list(range(2019, 2026))
 
 # Landsat 8/9 L2 LST 可視化參數 (攝氏度，從 20C 到 40C)
 VIS_PARAMS = {
-    # 顯示 LST 結果 (TB 是 LST 的預備步驟)
     'bands': ['TB'], 
     'min': 293.15, # 20 攝氏度 (273.15 + 20)
     'max': 313.15, # 40 攝氏度 (273.15 + 40)
@@ -72,16 +71,31 @@ VIS_PARAMS = {
 
 def get_l8_july_image(year):
     """
-    【修正點】：切換為 L8/L9 混合集合，確保數據可用性。
+    【最終修正】：合併 Landsat 8 (LC08) 和 Landsat 9 (LC09) 集合以確保數據可用性。
     """
     
-    collection = (
-        # 關鍵修正：切換為 L8/L9 混合集合 ID，增加數據可用性
-        ee.ImageCollection("LANDSAT/C02/T1_L2") 
+    start_date = f"{year}-01-01"
+    end_date = f"{year}-07-31"
+
+    # 步驟 1: 載入 Landsat 8 集合
+    l8_collection = (
+        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
         .filterBounds(region)
-        .filterDate(f"{year}-01-01", f"{year}-07-31") 
-        .sort('CLOUD_COVER') 
+        .filterDate(start_date, end_date) 
     )
+
+    # 步驟 2: 載入 Landsat 9 集合 (從 2021 年開始提供)
+    l9_collection = (
+        ee.ImageCollection("LANDSAT/LC09/C02/T1_L2") 
+        .filterBounds(region)
+        .filterDate(start_date, end_date) 
+    )
+
+    # 步驟 3: 合併 L8 和 L9 集合
+    collection = l8_collection.merge(l9_collection)
+    
+    # 步驟 4: 排序並選取雲量最低的影像
+    collection = collection.sort('CLOUD_COVER') 
     
     size = collection.size().getInfo()
     if size == 0:
@@ -94,10 +108,10 @@ def get_l8_july_image(year):
         print(f"Warning: Landsat 8/9 image is void for {year} (Jan-Jul).")
         return None
     
-    # 步驟 1: 應用 TB 和 SR 波段的縮放
+    # 步驟 5: 應用 TB 和 SR 波段的縮放
     scaled_image = apply_landsat_temp_scale(image)
 
-    # 步驟 2: 裁剪並將原始元數據複製到縮放後的影像上
+    # 步驟 6: 裁剪並將原始元數據複製到縮放後的影像上
     final_image = scaled_image.clip(region)
     final_image = final_image.copyProperties(image, ['CLOUD_COVER', 'system:time_start'])
     
@@ -196,7 +210,7 @@ def update_image(selected_year):
             thumb_params['scale'] = 60 # TIRS 原生解析度
             thumb_params['region'] = region.getInfo()
             
-            # 恢復使用 image.getThumbURL，並確保只 select('TB') 降低負載
+            # 使用最基礎、最穩定的 image.getThumbURL
             url = image.select('TB').getThumbURL(thumb_params)
 
             status_text = f"當前年份: {selected_year} (TB 載入日期: {date_info} | 雲量: {cloud_cover_display}%)"
