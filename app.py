@@ -72,11 +72,12 @@ VIS_PARAMS = {
 
 def get_l8_july_image(year):
     """
-    【修正點】：確保影像處理流程最簡化，以提高 GEE 穩定性。
+    【修正點】：切換為 L8/L9 混合集合，確保數據可用性。
     """
     
     collection = (
-        ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
+        # 關鍵修正：切換為 L8/L9 混合集合 ID，增加數據可用性
+        ee.ImageCollection("LANDSAT/C02/T1_L2") 
         .filterBounds(region)
         .filterDate(f"{year}-01-01", f"{year}-07-31") 
         .sort('CLOUD_COVER') 
@@ -84,13 +85,13 @@ def get_l8_july_image(year):
     
     size = collection.size().getInfo()
     if size == 0:
-        print(f"Warning: No Landsat 8 images found for {year} (Jan-Jul).")
+        print(f"Warning: No Landsat 8/9 images found for {year} (Jan-Jul).")
         return None
     
     image = collection.first()
     
     if image is None:
-        print(f"Warning: Landsat 8 image is void for {year} (Jan-Jul).")
+        print(f"Warning: Landsat 8/9 image is void for {year} (Jan-Jul).")
         return None
     
     # 步驟 1: 應用 TB 和 SR 波段的縮放
@@ -98,7 +99,6 @@ def get_l8_july_image(year):
 
     # 步驟 2: 裁剪並將原始元數據複製到縮放後的影像上
     final_image = scaled_image.clip(region)
-    # 【關鍵修正】：為了確保穩定，只複製 CLOUD_COVER 和時間屬性，避免複製整個字典增加負載
     final_image = final_image.copyProperties(image, ['CLOUD_COVER', 'system:time_start'])
     
     # 檢查最終影像是否有效 (檢查 TB 波段)
@@ -119,7 +119,7 @@ def get_l8_july_image(year):
 app = dash.Dash(__name__)
 
 app.layout = html.Div([
-    html.H1("Landsat 8 LST 亮度溫度瀏覽器 (Kelvin) - GEE/Dash", 
+    html.H1("Landsat 8/9 LST 亮度溫度瀏覽器 (Kelvin) - GEE/Dash", 
              style={'textAlign': 'center', 'margin-bottom': '20px', 'color': '#2C3E50'}),
     
     # 滑桿控制區
@@ -179,7 +179,6 @@ def update_image(selected_year):
         
         # 步驟 A: 嘗試獲取雲量和日期資訊
         try:
-            # 雲量和時間資訊應該已被 copyProperties 成功複製
             cloud_cover = image.get('CLOUD_COVER').getInfo()
             date_info = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd').getInfo()
             
@@ -197,7 +196,7 @@ def update_image(selected_year):
             thumb_params['scale'] = 60 # TIRS 原生解析度
             thumb_params['region'] = region.getInfo()
             
-            # 【關鍵修正】：恢復使用 image.getThumbURL，並確保只 select('TB') 降低負載
+            # 恢復使用 image.getThumbURL，並確保只 select('TB') 降低負載
             url = image.select('TB').getThumbURL(thumb_params)
 
             status_text = f"當前年份: {selected_year} (TB 載入日期: {date_info} | 雲量: {cloud_cover_display}%)"
@@ -211,7 +210,7 @@ def update_image(selected_year):
             status_text = f"當前年份: {selected_year} (載入成功，但縮圖 URL 產生失敗)"
 
     else:
-        status_text = f"當前年份: {selected_year} (錯誤：該時段無 Landsat 8 影像可用 (1月-7月))"
+        status_text = f"當前年份: {selected_year} (錯誤：該時段無 Landsat 8/9 影像可用 (1月-7月))"
         
     return url, status_text
 
