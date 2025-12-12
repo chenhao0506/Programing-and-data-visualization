@@ -74,13 +74,11 @@ L8_RHO = 14388.0 / L8_LAMBDA
 def calculate_lst_celsius_image(image):
     """
     實作 LST 完整計算流程 (NDVI -> FV -> EM -> LST)。
-    注意：此函數預期輸入的 image 波段已經過 applyScaleFactors 處理。
     """
     # 0. 提取預處理後的波段 (B5/NIR, B4/Red, LST_K/T_b)
-    # 由於 applyScaleFactors 已將 ST_B10 重新命名為 LST_K (亮度溫度 Tb)，這裡直接使用。
     nir = image.select('SR_B5') 
     red = image.select('SR_B4') 
-    tb_kelvin = image.select('LST_K')
+    tb_kelvin = image.select('LST_K') # <-- Image 物件
     
     # --- 步驟 1: 計算 NDVI ---
     ndvi = nir.subtract(red).divide(nir.add(red)).rename('NDVI')
@@ -100,9 +98,15 @@ def calculate_lst_celsius_image(image):
     
     # --- 步驟 4: 計算 Land Surface Temperature (LST) ---
     # LST = T_b / (1 + (λ * T_b / ρ) * ln(ε))
-    rho_const = ee.Number(L8_LAMBDA).multiply(tb_kelvin).divide(ee.Number(L8_RHO)).multiply(em.log())
     
-    # LST (Kelvin)
+    # 1. 計算 λ * T_b / ρ
+    rho_const_numerator = tb_kelvin.multiply(L8_LAMBDA) # <-- 修正：使用 Image.multiply(Number)
+    rho_const_factor = rho_const_numerator.divide(L8_RHO) 
+    
+    # 2. 乘以 ln(ε)
+    rho_const = rho_const_factor.multiply(em.log())
+    
+    # 3. LST (Kelvin) = T_b / (1 + [rho_const])
     lst_kelvin = tb_kelvin.divide(ee.Number(1).add(rho_const))
     
     # 轉換為攝氏度: T(°C) = T(K) - 273.15
@@ -113,7 +117,7 @@ def calculate_lst_celsius_image(image):
 
 def get_l8_lst_data(year, grid_size=0.01):
     """
-    【穩定性優化】：使用 median 聚合來取代 sort().first()。
+    使用 median 聚合的穩定 LST 數據獲取函數。
     """
     
     # 1. 建立 L8 集合並過濾
@@ -124,7 +128,6 @@ def get_l8_lst_data(year, grid_size=0.01):
     )
     
     # 2. 應用雲遮罩和縮放因子 (只保留雲量低的影像)
-    # 使用 CLOUD_COVER_LAND 篩選，並計算集合的平均雲量 (用於顯示)
     filtered_collection = collection.filterMetadata('CLOUD_COVER_LAND', 'less_than', 80)
     
     size = filtered_collection.size().getInfo()
@@ -159,11 +162,13 @@ def get_l8_lst_data(year, grid_size=0.01):
         
     grid_fc = ee.FeatureCollection(grid_rects)
     
+    # 3. 提取每個網格的平均 LST 值 (30m 解析度)
     mean_lst_data = lst_celsius_image.reduceRegions(
         collection=grid_fc,
         reducer=ee.Reducer.mean(),
-        scale=30, # LST 產品解析度
-        tileScale=8
+        geometry=region, 
+        scale=30, 
+        tileScale=8 
     )
     
     # 7. 將結果轉換為客戶端 DataFrame
