@@ -183,7 +183,7 @@ def update_image(selected_year):
         # 步驟 B: 嘗試生成縮圖 URL
         try:
             thumb_params = VIS_PARAMS.copy()
-            thumb_params['scale'] = 60 
+            thumb_params['scale'] = 100 
             thumb_params['region'] = region.getInfo()
             
             # 生成縮圖 URL (這將觸發實際的影像處理)
