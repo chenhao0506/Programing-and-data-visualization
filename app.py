@@ -4,7 +4,6 @@ import geemap
 import json
 import dash
 from dash import dcc, html
-import pandas as pd
 from google.oauth2 import service_account
 
 # ----------------------------------------------------
@@ -44,20 +43,9 @@ print("Earth Engine 初始化成功")
 def apply_landsat_temp_scale(image):
     """
     將 Landsat 8 C2 L2 的熱紅外線波段 (ST_B10) DN 值轉換為亮度溫度 (Kelvin, K)。
-    需要使用元數據中的 K1 和 K2 參數。
     """
-    # L2 集合中，Band 10 已經是經過大氣校正的地表溫度 (ST_B10)，
-    # 但為了計算 LST，我們需要先獲得亮度溫度 (TB)。
-    # 
-    # 註：此處我們將直接使用 GEE 推薦的 LST 轉換函數，
-    # 但由於 L2 集合已經有經過大氣校正的地表溫度 (ST_B10)，
-    # 我們將先確保 ST_B10 數值被正確縮放。
-
-    # C2 L2 集合的 ST_B10 波段，其縮放因子為 0.00341802 + 149.0
-    # 但這個波段已經是 Kelvin 溫度，我們只需要縮放它。
-    thermal = image.select('ST_B10')
-    
     # L2 集合中，ST_B10 的縮放公式是：(DN * 0.00341802) + 149.0
+    thermal = image.select('ST_B10')
     tb = thermal.multiply(0.00341802).add(149.0).rename('TB')
     
     # 確保 SR 波段也被正確縮放 (SR_B4, SR_B3, SR_B2)
@@ -84,7 +72,7 @@ VIS_PARAMS = {
 
 def get_l8_july_image(year):
     """
-    取得指定年份七月雲量百分比最低的 Landsat 8 影像，並進行 TB 轉換。
+    【修正點】：確保影像處理流程最簡化，以提高 GEE 穩定性。
     """
     
     collection = (
@@ -108,13 +96,13 @@ def get_l8_july_image(year):
     # 步驟 1: 應用 TB 和 SR 波段的縮放
     scaled_image = apply_landsat_temp_scale(image)
 
-    # 步驟 2: 裁剪並將原始元數據複製到縮放後的影像上 (確保 CLOUD_COVER 存在)
+    # 步驟 2: 裁剪並將原始元數據複製到縮放後的影像上
     final_image = scaled_image.clip(region)
-    final_image = final_image.set(image.toDictionary())
+    # 【關鍵修正】：為了確保穩定，只複製 CLOUD_COVER 和時間屬性，避免複製整個字典增加負載
+    final_image = final_image.copyProperties(image, ['CLOUD_COVER', 'system:time_start'])
     
     # 檢查最終影像是否有效 (檢查 TB 波段)
     try:
-        # 檢查 TB 波段是否存在
         if final_image.select('TB').bandNames().size().getInfo() == 0:
             print(f"Warning: Final image processing failed or TB band is missing for {year}.")
             return None
@@ -122,7 +110,6 @@ def get_l8_july_image(year):
         print(f"Warning: GEE image processing failed for {year}.")
         return None
         
-    # 返回包含 TB 和 SR 波段的最終影像
     return final_image
 
 
@@ -192,6 +179,7 @@ def update_image(selected_year):
         
         # 步驟 A: 嘗試獲取雲量和日期資訊
         try:
+            # 雲量和時間資訊應該已被 copyProperties 成功複製
             cloud_cover = image.get('CLOUD_COVER').getInfo()
             date_info = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd').getInfo()
             
@@ -206,13 +194,12 @@ def update_image(selected_year):
         # 步驟 B: 嘗試生成縮圖 URL
         try:
             thumb_params = VIS_PARAMS.copy()
-            thumb_params['scale'] = 60 # 調整回 60m 試試穩定性
+            thumb_params['scale'] = 60 # TIRS 原生解析度
             thumb_params['region'] = region.getInfo()
             
-            # 使用 geemap.get_image_url 確保穩定性
-            url = geemap.get_image_url(image.select('TB'), **thumb_params)
+            # 【關鍵修正】：恢復使用 image.getThumbURL，並確保只 select('TB') 降低負載
+            url = image.select('TB').getThumbURL(thumb_params)
 
-            # 狀態顯示提示當前顯示的是亮度溫度 (Kelvin)
             status_text = f"當前年份: {selected_year} (TB 載入日期: {date_info} | 雲量: {cloud_cover_display}%)"
 
         except ee.ee_exception.EEException as e:
