@@ -171,28 +171,38 @@ def update_image(selected_year):
     
     image = get_l8_july_image(selected_year)
     
+    cloud_cover_display = "N/A" # 預設值
+
     if image is not None:
         try:
             thumb_params = VIS_PARAMS.copy()
             
-            # 解析度維持 60m (或可調整回 30m，但 60m 更穩定)
+            # 解析度維持 60m 
             thumb_params['scale'] = 60 
             thumb_params['region'] = region.getInfo()
             
-            # 新增 CLOUD_COVER 資訊以顯示雲量百分比 (若影像非空)
+            # 【修正點 1】嘗試獲取 CLOUD_COVER 資訊，如果失敗，則保持預設值 "N/A"
+            # 使用 .getInfo() 獲取元數據，這可能會拋出錯誤
             cloud_cover = image.get('CLOUD_COVER').getInfo()
+            if cloud_cover is not None:
+                cloud_cover_display = f"{cloud_cover:.2f}"
             
+            # 【修正點 2】在確保獲取雲量資訊後，才嘗試獲取縮圖 URL
             url = image.getThumbURL(thumb_params)
 
-            status_text = f"當前年份: {selected_year} ( Landsat 8 載入成功，雲量: {cloud_cover:.2f}% )"
+            status_text = f"當前年份: {selected_year} ( Landsat 8 載入成功，雲量: {cloud_cover_display}% )"
+        
         except ee.ee_exception.EEException as e:
             # 捕獲 GEE 錯誤
             url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
             status_text = f"當前年份: {selected_year} (GEE 影像處理錯誤：{e})"
-        except Exception:
-             # 捕獲其他錯誤，例如 CLOUD_COVER 無法取得
+        
+        except Exception as e:
+            # 【修正點 3】捕獲其他錯誤，例如獲取 .getInfo() 失敗
+            print(f"Error retrieving metadata or thumbnail URL: {e}")
             url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
-            status_text = f"當前年份: {selected_year} (Landsat 8 載入成功，但無法取得雲量資訊)"
+            status_text = f"當前年份: {selected_year} ( Landsat 8 載入成功，但無法取得雲量資訊，請嘗試重新載入 )"
+    
     else:
         # 如果找不到影像
         url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
