@@ -12,8 +12,7 @@ from google.oauth2 import service_account
 print("--- 程式啟動與初始化 ---")
 print(f"geemap version: {geemap.__version__}")
 
-# 優先使用環境變數 PORT，如果沒有則使用 7860 (Hugging Face 標準 Port)
-PORT = int(os.environ.get('PORT', 7860))
+
 
 GEE_SERVICE_SECRET = os.environ.get("GEE_SERVICE_SECRET", "")
 if not GEE_SERVICE_SECRET:
