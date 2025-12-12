@@ -39,7 +39,7 @@ print("Earth Engine 初始化成功")
 # ----------------------------------------------------
 
 # 定義研究範圍與年份 (彰化縣的局部區域)
-region = ee.Geometry.Rectangle([120.49, 23.92, 120.65, 24.10])
+region = ee.Geometry.Rectangle([120.24, 23.77, 120.69, 24.20])
 # 年份範圍調整為 2019 到 2025
 years = list(range(2019, 2026)) 
 
@@ -60,7 +60,7 @@ def get_l8_july_image(year):
     collection = (
         ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
         .filterBounds(region)
-        .filterDate(f"{year}-07-01", f"{year}-07-31") 
+        .filterDate(f"{year}-06-01", f"{year}-08-31") 
         .sort('CLOUD_COVER') 
     )
     
