@@ -69,9 +69,9 @@ years = list(range(2019, 2026))
 
 # Landsat 8/9 L2 (Surface Reflectance) 可視化參數 (自然色)
 VIS_PARAMS = {
-    'bands': ['B4', 'B3', 'B2'], 
-    'min': 5000, 
-    'max': 20000,
+    'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 
+    'min': 0, 
+    'max': 0.3,
     'gamma': 1.4
 }
 
