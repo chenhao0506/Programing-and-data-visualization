@@ -163,7 +163,7 @@ def get_l8_lst_data(year, grid_size=0.01):
         collection=grid_fc,
         reducer=ee.Reducer.mean(),
         scale=30, # LST 產品解析度
-        maxPixels=1e9
+        tileScale=8
     )
     
     # 7. 將結果轉換為客戶端 DataFrame
