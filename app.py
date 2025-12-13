@@ -150,7 +150,7 @@ app.layout = html.Div([
 ])
 
 # ----------------------------------------------------
-# 4. Callback：根據滑桿值更新影像
+# 4. Callback：根據滑桿值更新影像（三層式）
 # ----------------------------------------------------
 @app.callback(
     [Output('leaflet-map', 'children'),
@@ -162,29 +162,40 @@ def update_map_layer(selected_year, current_children):
     print(f"Callback 1: 更新地圖圖層 for year: {selected_year}")
     status_text = f"當前年份: {selected_year} (LST 與底圖數據載入中...)"
 
+    # 取得影像
     lst_image = get_l8_summer_lst(selected_year)
     composite_image = get_l8_summer_composite(selected_year)
 
-    base_layers = [c for c in current_children if isinstance(c, dl.TileLayer) and c.id == 'osm-layer']
-    gee_layers = []
+    new_children = []
 
+    # --- 最底層：全球 OSM ---
+    global_osm = dl.TileLayer(
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        id='global-osm-layer',
+        opacity=1.0,
+        zIndex=1
+    )
+    new_children.append(global_osm)
+
+    # --- 中間層：台灣 Landsat 8 真彩影像 ---
     if composite_image is not None:
         try:
             map_info_comp = composite_image.getMapId(VIS_PARAMS)
             tile_url_comp = map_info_comp['tile_fetcher'].url_format
-            composite_layer = dl.TileLayer(
+            landsat_layer = dl.TileLayer(
                 url=tile_url_comp,
                 id='gee-composite-layer',
                 attribution=f'GEE Landsat 8 Composite Taiwan {selected_year}',
                 opacity=1.0,
                 zIndex=5
             )
-            gee_layers.append(composite_layer)
+            new_children.append(landsat_layer)
             status_text = f"當前年份: {selected_year} (台灣全島底圖載入成功)"
         except ee.ee_exception.EEException as e:
             print(f"GEE Composite Tile Generation Error (Taiwan): {e}")
             status_text = f"當前年份: {selected_year} (台灣全島底圖載入失敗，原因：{e})"
 
+    # --- 最上層：彰化 LST ---
     if lst_image is not None:
         try:
             map_info = lst_image.getMapId(LST_VIS)
@@ -192,15 +203,17 @@ def update_map_layer(selected_year, current_children):
             lst_layer = dl.TileLayer(
                 url=tile_url,
                 id='gee-lst-layer',
-                attribution=f'GEE Landsat 8 LST Taiwan Central {selected_year} / Data Clickable',
+                attribution=f'GEE Landsat 8 LST Taiwan Central {selected_year}',
                 opacity=0.8,
                 zIndex=10
             )
-            gee_layers.append(lst_layer)
+            new_children.append(lst_layer)
+
             if "載入失敗" not in status_text:
                 status_text = status_text.replace("載入成功", "及中部 LST 圖層載入成功")
             else:
                 status_text = f"當前年份: {selected_year} (底圖失敗，但中部 LST 圖層載入成功)"
+
         except ee.ee_exception.EEException as e:
             print(f"GEE LST Tile Generation Error: {e}")
             status_text = f"當前年份: {selected_year} (LST 影像處理錯誤：{e})"
@@ -209,7 +222,6 @@ def update_map_layer(selected_year, current_children):
         if "載入成功" not in status_text:
             status_text = f"當前年份: {selected_year} (無可用 GEE 影像資料)"
 
-    new_children = base_layers + gee_layers
     return new_children, status_text
 
 # ----------------------------------------------------
