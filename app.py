@@ -224,68 +224,6 @@ def update_map_layer(selected_year, current_children):
 
     return new_children, status_text
 
-# ----------------------------------------------------
-# 5. Callback 2：處理單擊事件並查詢 LST
-# ----------------------------------------------------
-@app.callback(
-    Output('lst-query-output', 'children'),
-    [Input('leaflet-map', 'click_lat_lng')], 
-    [State('year-slider', 'value')]
-)
-def query_lst_on_click(click_lat_lng, selected_year):
-    if click_lat_lng is None:
-        return '點擊地圖上的任意點位查詢地表溫度 (°C)...'
-
-    lat, lng = click_lat_lng
-    point_check = ee.Geometry.Point([lng, lat])
-    if not taiwan_region.contains(point_check).getInfo():
-        return html.Span([
-            f'點擊座標 ({lat:.4f}, {lng:.4f})：',
-            html.B('查詢失敗', style={'color': 'red'}),
-            '，LST 數據僅限於台灣中部研究區域。'
-        ])
-
-    try:
-        lst_image = get_l8_summer_lst(selected_year)
-        if lst_image is None:
-            return f'點擊座標 ({lat:.4f}, {lng:.4f})：抱歉，{selected_year} 年無 LST 影像資料。'
-
-        lst_image_for_query = lst_image.unmask(-999)
-        point = ee.Geometry.Point([lng, lat])
-        point_data = lst_image_for_query.reduceRegion(
-            reducer=ee.Reducer.first(),
-            geometry=point,
-            scale=30
-        ).getInfo()
-
-        lst_value = point_data.get('LST_C')
-        if lst_value is None or abs(lst_value - (-999)) < 1:
-            return html.Span([
-                f'點擊座標 ({lat:.4f}, {lng:.4f})：',
-                html.B('該點位無有效 LST 數值', style={'color': 'orange'}),
-                ' (原為雲遮罩區或無數據區)'
-            ])
-
-        return html.Span([
-            f'點擊座標 ({lat:.4f}, {lng:.4f})： ',
-            html.B(f'地表溫度約 {lst_value:.2f} °C', style={'color': '#16A085'}),
-            f' ({selected_year} 年夏季數據)'
-        ])
-
-    except ee.ee_exception.EEException as e:
-        error_msg = str(e)
-        print(f"GEE Reduce Region Error: {error_msg}")
-        return html.Span([
-            f'查詢錯誤 (GEE)：',
-            html.B(error_msg, style={'color': 'red'})
-        ])
-    except Exception as e:
-        error_msg = str(e)
-        print(f"General Query Error: {error_msg}")
-        return html.Span([
-            f'查詢失敗 (程式錯誤)：',
-            html.B(error_msg, style={'color': 'red'})
-        ])
 
 # ----------------------------------------------------
 # 6. 啟動 Dash
