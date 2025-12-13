@@ -7,13 +7,42 @@ import dash
 from dash import dcc, html, Output, Input, State
 from google.oauth2 import service_account
 
+# -----------------------------
+# 1. 程式化創建 assets 資料夾與 CSS 檔案
+#    現在直接針對 Leaflet 預設類別設置 z-index
+# -----------------------------
+
+ASSETS_DIR = "assets"
+CSS_FILE_NAME = "custom.css"
+CSS_FILE_PATH = os.path.join(ASSETS_DIR, CSS_FILE_NAME)
+
+if not os.path.exists(ASSETS_DIR):
+    os.makedirs(ASSETS_DIR)
+    print(f"資料夾已創建: {ASSETS_DIR}")
+
+# ********** 關鍵變更點 **********
+# 直接針對 Leaflet 的預設圖層控制類 (.leaflet-control-layers) 設置 z-index
+CSS_CONTENT = """
+/* 確保 LayersControl 位於頂層，不會被其他元件遮擋 */
+/* 適用於 dash_leaflet 1.1.3 版本，因其不支持 className */
+.leaflet-control-layers {
+    z-index: 999999 !important; 
+}
+"""
+
+with open(CSS_FILE_PATH, "w", encoding="utf-8") as f:
+    f.write(CSS_CONTENT)
+
+print(f"CSS 檔案已創建或更新於: {CSS_FILE_PATH}")
+print("---")
 
 # ----------------------------------------------------
-# 1. Hugging Face 環境變數 → Earth Engine 初始化
+# 2. Hugging Face 環境變數 → Earth Engine 初始化
 # ----------------------------------------------------
 GEE_SECRET = os.environ.get("GEE_SERVICE_SECRET", "")
 if not GEE_SECRET:
     raise ValueError("請先在 Hugging Face 設定環境變數 GEE_SERVICE_SECRET（完整 JSON）。")
+
 
 service_account_info = json.loads(GEE_SECRET)
 
@@ -24,6 +53,7 @@ credentials = service_account.Credentials.from_service_account_info(
 
 ee.Initialize(credentials)
 print("Earth Engine 初始化成功")
+
 
 
 # ----------------------------------------------------
