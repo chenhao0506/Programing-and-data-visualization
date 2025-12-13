@@ -7,37 +7,8 @@ import dash
 from dash import dcc, html, Output, Input, State
 from google.oauth2 import service_account
 
-# -----------------------------
-# 1. 程式化創建 assets 資料夾與 CSS 檔案
-#    現在直接針對 Leaflet 預設類別設置 z-index
-# -----------------------------
-
-ASSETS_DIR = "assets"
-CSS_FILE_NAME = "custom.css"
-CSS_FILE_PATH = os.path.join(ASSETS_DIR, CSS_FILE_NAME)
-
-if not os.path.exists(ASSETS_DIR):
-    os.makedirs(ASSETS_DIR)
-    print(f"資料夾已創建: {ASSETS_DIR}")
-
-# ********** 關鍵變更點 **********
-# 直接針對 Leaflet 的預設圖層控制類 (.leaflet-control-layers) 設置 z-index
-CSS_CONTENT = """
-/* 確保 LayersControl 位於頂層，不會被其他元件遮擋 */
-/* 適用於 dash_leaflet 1.1.3 版本，因其不支持 className */
-.leaflet-control-layers {
-    z-index: 999999 !important; 
-}
-"""
-
-with open(CSS_FILE_PATH, "w", encoding="utf-8") as f:
-    f.write(CSS_CONTENT)
-
-print(f"CSS 檔案已創建或更新於: {CSS_FILE_PATH}")
-print("---")
-
 # ----------------------------------------------------
-# 2. Hugging Face 環境變數 → Earth Engine 初始化
+# 1. Hugging Face 環境變數 → Earth Engine 初始化
 # ----------------------------------------------------
 GEE_SECRET = os.environ.get("GEE_SERVICE_SECRET", "")
 if not GEE_SECRET:
@@ -61,10 +32,14 @@ print("Earth Engine 初始化成功")
 # ----------------------------------------------------
 
 # 定義研究範圍與年份
-region = ee.Geometry.Rectangle([120.24, 23.77, 120.69, 24.20])
+taiwan_region = ee.Geometry.Rectangle([120.24, 23.77, 120.69, 24.20])
 years = list(range(2015, 2026)) 
 
-# 可視化參數 (維持不變)
+# === 修改點 1: 新增亞洲範圍定義 (經度 50E ~ 150E, 緯度 0N ~ 60N) ===
+asia_region = ee.Geometry.Rectangle([50, 0, 150, 60])
+
+
+# 可視化參數 (保持不變)
 VIS_PARAMS = {
     'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 
     'min': 0, 
@@ -83,79 +58,67 @@ LST_VIS = {
 
 def mask_clouds_and_scale(image):
     """
-    對單張影像進行：
-    1. 雲/雲影遮罩 (Masking)
-    2. 數值縮放 (Scaling)
+    對單張影像進行：1. 雲/雲影遮罩 2. 數值縮放 
     """
     qa = image.select('QA_PIXEL')
 
-    # Bit 3: Cloud, Bit 4: Cloud Shadow
     cloud_bit_mask = 1 << 3
     cloud_shadow_bit_mask = 1 << 4
 
-    # 兩者皆為 0 才保留
     mask = qa.bitwiseAnd(cloud_bit_mask).eq(0) \
              .And(qa.bitwiseAnd(cloud_shadow_bit_mask).eq(0))
 
-    # 應用遮罩並進行數值轉換 (DN -> Reflectance)
-    # Reflectance = (DN * 0.0000275) - 0.2
     return image.updateMask(mask) \
-                .select(['SR_B4', 'SR_B3', 'SR_B2']) \
-                .multiply(0.0000275) \
-                .add(-0.2)
+                 .select(['SR_B4', 'SR_B3', 'SR_B2']) \
+                 .multiply(0.0000275) \
+                 .add(-0.2)
 
 def get_l8_summer_composite(year):
     """
-    取得指定年份夏季 (6-8月) 的去雲合成影像。
-    修正：使用 5 次迭代內插法填補空洞，並移除最後的強力填補，
-    以確保數據真實性，避免過度平滑。
+    取得指定年份夏季 (6-8月) 的去雲真彩合成影像 (亞洲範圍)。
     """
     
     collection = (
         ee.ImageCollection("LANDSAT/LC08/C02/T1_L2") 
-        .filterBounds(region)
+        # === 修改點 2A: 過濾影像集到亞洲範圍，減少處理資料量 ===
+        .filterBounds(asia_region) 
         .filterDate(f"{year}-06-01", f"{year}-08-31") 
         .filter(ee.Filter.lt('CLOUD_COVER', 60)) 
     )
     
-    # 檢查是否有影像
-    size = collection.size().getInfo()
+    try:
+        size = collection.size().getInfo()
+    except ee.ee_exception.EEException as e:
+        print(f"Error checking collection size: {e}")
+        return None
+        
     if size == 0:
-        print(f"Warning: No Landsat 8 images found for Summer {year}.")
+        print(f"Warning: No Landsat 8 images found for Summer {year} in Asia region.")
         return None
     
-    # 步驟 1: 原始去雲合成
-    # 先算出這一季的中位數影像 (此時會有因為雲被挖掉產生的空洞)
     current_image = collection.map(mask_clouds_and_scale).median()
     
-    # ---------------------------------------------------------
-    # 步驟 2: 迭代內插填補 (Iterative Filling) - 5 次循環
-    # ---------------------------------------------------------
-    
-    iterations = 10  
-    
+    # 迭代內插填補 (5 次循環)
+    iterations = 5  
     for i in range(iterations):
-        # 使用半徑 3 像素 (約90公尺) 進行取樣
-        # 這樣能保證補進去的數值是參考很近的鄰居，比較準確
+        # 為了效能，這裡保持小範圍的局部填補
         filled = current_image.focal_mean(radius=3, kernelType='circle', units='pixels', iterations=1)
-
-        final_fill = current_image.focal_mean(radius=100, kernelType='circle', units='pixels')
-        final_image = current_image.unmask(final_fill)
-        
-        # 填補空洞：只補 NoData 的地方，原本有值的地方不動
         current_image = current_image.unmask(filled)
-        
+    
+    # 最終填補
+    final_fill = current_image.focal_mean(radius=100, kernelType='circle', units='pixels')
+    final_image = current_image.unmask(final_fill)
 
-    # 裁剪到研究區域
-    return current_image.clip(region)
+    # === 修改點 2B: 裁剪結果到亞洲範圍 ===
+    return final_image.clip(asia_region) 
 
 def get_l8_summer_lst(year):
     """
-    夏季 (6–8 月) 地表溫度合成圖（攝氏）
+    夏季 (6–8 月) 地表溫度合成圖（攝氏）。 (限縮在台灣區域)
     """
     collection = (
         ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
-        .filterBounds(region)
+        .filterBounds(taiwan_region) # 保持在台灣區域
         .filterDate(f"{year}-06-01", f"{year}-08-31")
         .filter(ee.Filter.lt('CLOUD_COVER', 60))
     )
@@ -171,7 +134,7 @@ def get_l8_summer_lst(year):
         .multiply(0.00341802)
         .add(149.0)
         .subtract(273.15)
-        .clip(region)
+        .clip(taiwan_region) # 保持裁剪到台灣區域
     )
 
     return lst
@@ -181,18 +144,18 @@ def get_l8_summer_lst(year):
 # ----------------------------------------------------
 app = dash.Dash(__name__)
 
-# 預設地圖中心點 (研究區域中心點)
-center_lon = (120.24 + 120.69) / 2
-center_lat = (23.77 + 24.20) / 2
+# === 修改點 3: 預設地圖中心點改為亞洲中心點 (台灣上方) ===
+center_lon = (50 + 150) / 2 # 100
+center_lat = (0 + 60) / 2   # 30
 
 app.layout = html.Div([
     html.H1("Landsat 8 夏季地表溫度 (LST) 互動分析", 
               style={'textAlign': 'center', 'margin-bottom': '20px', 'color': '#2C3E50'}),
     
-    # 滑桿控制區
+    # 滑桿控制區 (保持不變)
     html.Div([
         html.H3(id='year-display', children=f"當前年份: {max(years)}", 
-                style={'textAlign': 'center', 'color': '#34495E'}),
+                  style={'textAlign': 'center', 'color': '#34495E'}),
         
         dcc.Slider(
             id='year-slider',
@@ -216,102 +179,111 @@ app.layout = html.Div([
             dl.Map(
                 id="leaflet-map",
                 center=[center_lat, center_lon], 
-                zoom=10,
+                zoom=4, # 初始縮放級別調整為 4，顯示亞洲較大範圍
                 doubleClickZoom=False, 
                 style={'width': '100%', 'height': '500px', 'margin': '0 auto'},
                 children=[
-                    dl.TileLayer(url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"),
+                    # 預設添加 OSM 作為備用底圖
+                    dl.TileLayer(url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", 
+                                 id='osm-layer', opacity=0.3),
                     # GEE 影像將通過 Callback 加入
                 ]
             ),
             # 點擊查詢結果顯示區
             html.H3(id='lst-query-output', 
-                    children='點擊地圖上的任意點位查詢地表溫度 (°C)...', 
-                    style={'textAlign': 'center', 'margin-top': '20px', 'color': '#C0392B', 'font-size': '20px'}),
+                      children='點擊地圖上的任意點位查詢地表溫度 (°C)...', 
+                      style={'textAlign': 'center', 'margin-top': '20px', 'color': '#C0392B', 'font-size': '20px'}),
             
-            # 儲存點擊經緯度的隱藏元件 (用於觸發 LST 查詢)
             dcc.Store(id='map-click-data', data={})
         ], style={'width': '80%', 'margin': '0 auto', 'border': '5px solid #3498DB', 'border-radius': '8px'})
     )
 ])
 
-
 # ----------------------------------------------------
-# 4. Callback：根據滑桿值更新影像 (修正後)
+# 4. Callback：根據滑桿值更新影像
 # ----------------------------------------------------
 @app.callback(
-    [dash.Output('satellite-image', 'src'),
-     dash.Output('year-display', 'children')],
-    [dash.Input('year-slider', 'value')]
+    [Output('leaflet-map', 'children'),
+      Output('year-display', 'children')],
+    [Input('year-slider', 'value')],
+    [State('leaflet-map', 'children')]
 )
-def update_image(selected_year):
+def update_map_layer(selected_year, current_children):
+    print(f"Callback 1: 更新地圖圖層 for year: {selected_year}")
     
-    print(f"Callback triggered for year: {selected_year}")
+    status_text = f"當前年份: {selected_year} (LST 與底圖數據載入中...)"
     
-    # 預設透明圖
-    url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' 
-    status_text = f"當前年份: {selected_year} (處理中...)"
+    # 取得 Landsat 8 LST 影像 (台灣區域)
+    lst_image = get_l8_summer_lst(selected_year)
+    # 取得 Landsat 8 無雲真彩影像 (亞洲範圍)
+    composite_image = get_l8_summer_composite(selected_year) 
 
-    # 1. 取得 RGB 合成影像
-    rgb = get_l8_summer_composite(selected_year)
-    
-    # 2. 取得 LST 地表溫度影像
-    lst = get_l8_summer_lst(selected_year)
-    
-    # 預設最終地圖為 None
-    final_map = None
+    # 保留地圖上的 OSM 底圖層
+    base_layers = [c for c in current_children if isinstance(c, dl.TileLayer) and c.id == 'osm-layer']
+    gee_layers = []
 
-    if rgb is not None:
-        # 如果 RGB 成功，將其設為底圖
-        final_map = rgb.visualize(**VIS_PARAMS)
-        status_text = f"當前年份: {selected_year}（夏季 RGB 合成）"
-
-        if lst is not None:
-            try:
-                # --- 視覺化 LST ---
-                lst_vis = {
-                'min': 10,
-                'max': 45,
-                'palette': [
-                '040274', '0502a3', '0502ce', '0602ff', '307ef3',
-                '30c8e2', '3be285', '86e26f', 'b5e22e', 'ffd611',
-                'ff8b13', 'ff0000', 'c21301', '911003'
-                ]}
-
-                lst_img = lst.visualize(**lst_vis)
-
-                # --- RGB + LST 疊圖 ---
-                # 讓 LST 疊在 RGB 上面
-                final_map = ee.ImageCollection([
-                    final_map, # RGB 放在第一層作為底圖
-                    lst_img
-                ]).mosaic() # 合成
-
-                status_text = f"當前年份: {selected_year}（RGB + 地表溫度疊圖）"
-
-            except ee.ee_exception.EEException as e:
-                print(f"GEE LST Overlay Error: {e}")
-                status_text = f"當前年份: {selected_year} (LST 處理錯誤，僅顯示 RGB)"
-            
-        
-        # 3. 產生縮圖 URL
+    # --- 處理真彩底圖圖層 (亞洲) ---
+    if composite_image is not None:
         try:
-            url = final_map.getThumbURL({
-                'scale': 100,
-                'region': region.getInfo()
-            })
-        except Exception as e:
-            print(f"General Thumbnail Error: {e}")
-            status_text = f"當前年份: {selected_year} (縮圖產生失敗)"
+            # === 修改點 4: 限制瓦片生成 scale，進一步提高亞洲範圍的載入速度 ===
+            map_info_comp = composite_image.getMapId(VIS_PARAMS, tileScale=8) 
+            tile_url_comp = map_info_comp['tile_fetcher'].url_format
 
+            # Landsat 8 真彩底圖 (亞洲範圍)
+            composite_layer = dl.TileLayer(
+                url=tile_url_comp,
+                id='gee-composite-layer',
+                attribution=f'GEE Landsat 8 Composite Asia {selected_year}',
+                opacity=1.0,
+                zIndex=5 # 在 LST 圖層之下
+            )
+            gee_layers.append(composite_layer)
+            status_text = f"當前年份: {selected_year} (亞洲真彩底圖載入成功)"
+
+        except ee.ee_exception.EEException as e:
+            print(f"GEE Composite Tile Generation Error (Asia): {e}")
+            # 如果亞洲範圍載入失敗，我們繼續嘗試載入 LST
+            
+    
+    # --- 處理 LST 圖層 (台灣區域) ---
+    if lst_image is not None:
+        try:
+            map_info = lst_image.getMapId(LST_VIS)
+            tile_url = map_info['tile_fetcher'].url_format
+
+            # LST 影像圖層 (台灣區域)
+            lst_layer = dl.TileLayer(
+                url=tile_url,
+                id='gee-lst-layer',
+                attribution=f'GEE Landsat 8 LST Taiwan {selected_year} / Data Clickable',
+                opacity=0.8,
+                zIndex=10 # 在真彩底圖之上
+            )
+            gee_layers.append(lst_layer)
+            
+            if "載入成功" in status_text:
+                status_text = status_text.replace("載入成功", "及台灣 LST 圖層載入成功")
+            else:
+                # 如果底圖載入失敗，單獨報告 LST 載入成功
+                status_text = f"當前年份: {selected_year} (台灣 LST 圖層載入成功)"
+
+
+        except ee.ee_exception.EEException as e:
+            print(f"GEE LST Tile Generation Error: {e}")
+            status_text = f"當前年份: {selected_year} (LST 影像處理錯誤：{e})"
+            
     else:
-        # 兩種影像都無法取得
-        status_text = f"當前年份: {selected_year} (無 Landsat 影像資料)"
-        
-    return url, status_text
+        print(f"Warning: No GEE LST images found for Summer {selected_year}.")
+        status_text = f"當前年份: {selected_year} (無可用台灣 LST 影像資料)"
+
+    
+    # 最終組合地圖子元件：OSM (最低層) + Landsat 真彩底圖 (亞洲) + Landsat LST (台灣)
+    new_children = base_layers + gee_layers
+    
+    return new_children, status_text
 
 # ----------------------------------------------------
-# 5. Callback 2：處理地圖點擊事件並查詢 LST 數值
+# 5. Callback 2：處理地圖點擊事件並查詢 LST 數值 (保持不變)
 # ----------------------------------------------------
 @app.callback(
     Output('lst-query-output', 'children'),
@@ -326,8 +298,18 @@ def query_lst_on_click(dblclick_lat_lng, selected_year):
     
     lat, lng = dblclick_lat_lng
     
+    # 檢查點擊點是否在台灣研究區域內 (優化查詢邏輯)
+    point_check = ee.Geometry.Point([lng, lat])
+    # 這裡只檢查台灣區域，因為 LST 數據只裁剪到台灣區域
+    if not taiwan_region.contains(point_check).getInfo():
+        return html.Span([
+            f'點擊座標 ({lat:.4f}, {lng:.4f})：',
+            html.B('查詢失敗', style={'color': 'red'}),
+            '，LST 數據僅限於台灣研究區域。'
+        ])
+
     try:
-        # 1. 取得該年份的 LST 影像 (可能因年份無數據而回傳 None)
+        # 1. 取得該年份的 LST 影像
         lst_image = get_l8_summer_lst(selected_year)
         if lst_image is None:
             return f'點擊座標 ({lat:.4f}, {lng:.4f})：抱歉，{selected_year} 年無 LST 影像資料。'
@@ -364,11 +346,9 @@ def query_lst_on_click(dblclick_lat_lng, selected_year):
                 f' ({selected_year} 年夏季數據)'
             ])
         else:
-            # GEE 查詢結果為 None (雖然使用了 unmask，但仍可能發生)
             return f'點擊座標 ({lat:.4f}, {lng:.4f})：查詢失敗，結果為 None。'
 
     except ee.ee_exception.EEException as e:
-        # 捕捉 GEE 服務端錯誤
         error_msg = str(e)
         print(f"GEE Reduce Region Error: {error_msg}")
         return html.Span([
@@ -377,7 +357,6 @@ def query_lst_on_click(dblclick_lat_lng, selected_year):
         ])
 
     except Exception as e:
-        # 捕捉 Python 程式碼錯誤
         error_msg = str(e)
         print(f"General Query Error: {error_msg}")
         return html.Span([
