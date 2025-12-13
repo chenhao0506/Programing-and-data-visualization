@@ -34,13 +34,16 @@ taiwan_region = ee.Geometry.Rectangle([120.24, 23.77, 120.69, 24.20])
 taiwan_composite_region = ee.Geometry.Rectangle([119.219433, 21.778681, 122.688102, 25.466353])
 years = list(range(2015, 2026))
 
+# 可視化參數 (底圖真彩)
 VIS_PARAMS = {
     'bands': ['SR_B4', 'SR_B3', 'SR_B2'], 
     'min': 0, 
     'max': 0.3,
-    'gamma': 1.4
+    'gamma': 1.4,
+    'tileScale': 8  # 放到 vis_params
 }
 
+# 可視化參數 (LST)
 LST_VIS = {
     'min': 10,
     'max': 45,
@@ -48,7 +51,8 @@ LST_VIS = {
         '040274', '0502a3', '0502ce', '0602ff', '307ef3',
         '30c8e2', '3be285', '86e26f', 'b5e22e', 'ffd611',
         'ff8b13', 'ff0000', 'c21301', '911003'
-    ]
+    ],
+    'tileScale': 8
 }
 
 def mask_clouds_and_scale(image):
@@ -166,7 +170,7 @@ def update_map_layer(selected_year, current_children):
 
     if composite_image is not None:
         try:
-            map_info_comp = composite_image.getMapId(VIS_PARAMS, tileScale=8)
+            map_info_comp = composite_image.getMapId(VIS_PARAMS)
             tile_url_comp = map_info_comp['tile_fetcher'].url_format
             composite_layer = dl.TileLayer(
                 url=tile_url_comp,
