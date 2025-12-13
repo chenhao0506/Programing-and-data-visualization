@@ -139,10 +139,7 @@ app.layout = html.Div([
                                  id='osm-layer', opacity=0.3),
                 ]
             ),
-            html.H3(id='lst-query-output', 
-                    children='點擊地圖上的任意點位查詢地表溫度 (°C)...', 
-                    style={'textAlign': 'center', 'margin-top': '20px', 
-                           'color': '#C0392B', 'font-size': '20px'}),
+            
             dcc.Store(id='map-click-data', data={})
         ], style={'width': '80%', 'margin': '0 auto', 'border': '5px solid #3498DB', 
                   'border-radius': '8px'})
