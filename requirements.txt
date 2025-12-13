@@ -4,3 +4,4 @@ google-auth
 dash
 pandas
 plotly
+dash_leaflet
