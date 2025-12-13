@@ -82,7 +82,7 @@ def get_l8_summer_composite(year):
         image = collection.map(mask_clouds_and_scale).median()
         iterations = 10
         for i in range(iterations):
-            image = image.unmask(image.focal_mean(radius=5, kernelType='circle', units='pixels'))
+            image = image.unmask(image.focal_mean(radius=2, kernelType='circle', units='pixels'))
         return image.clip(taiwan_composite_region)
     except ee.ee_exception.EEException as e:
         print(f"GEE Composite Error: {e}")
@@ -114,7 +114,7 @@ def get_l8_summer_lst(year):
         )
         iterations = 10
         for i in range(iterations):
-            lst = lst.unmask(lst.focal_mean(radius=5, kernelType='circle', units='pixels'))
+            lst = lst.unmask(lst.focal_mean(radius=10, kernelType='circle', units='pixels'))
         return lst
     except ee.ee_exception.EEException as e:
         print(f"GEE LST Error: {e}")
