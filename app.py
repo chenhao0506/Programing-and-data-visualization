@@ -66,7 +66,7 @@ def get_l8_summer_composite(year):
     collection = (
         ee.ImageCollection("LANDSAT/LC08/C02/T1_L2")
         .filterBounds(taiwan_composite_region)
-        .filterDate(f"{year}-06-01", f"{year}-08-31")
+        .filterDate(f"{year}-07-01", f"{year}-07-31")
         .filter(ee.Filter.lt('CLOUD_COVER', 60))
     )
     if collection.size().getInfo() == 0:
