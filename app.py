@@ -235,56 +235,80 @@ app.layout = html.Div([
     )
 ])
 
+
 # ----------------------------------------------------
-# 4. Callback：根據滑桿值更新影像
+# 4. Callback：根據滑桿值更新影像 (修正後)
 # ----------------------------------------------------
 @app.callback(
-    [Output('leaflet-map', 'children'),
-     Output('year-display', 'children')],
-    [Input('year-slider', 'value')],
-    [State('leaflet-map', 'children')]
+    [dash.Output('satellite-image', 'src'),
+     dash.Output('year-display', 'children')],
+    [dash.Input('year-slider', 'value')]
 )
-def update_map_layer(selected_year, current_children):
-    print(f"Callback 1: 更新地圖圖層 for year: {selected_year}")
+def update_image(selected_year):
     
-    status_text = f"當前年份: {selected_year} (LST 數據載入中...)"
+    print(f"Callback triggered for year: {selected_year}")
     
-    lst_image = get_l8_summer_lst(selected_year)
+    # 預設透明圖
+    url = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' 
+    status_text = f"當前年份: {selected_year} (處理中...)"
+
+    # 1. 取得 RGB 合成影像
+    rgb = get_l8_summer_composite(selected_year)
     
-    # 保留地圖上的底圖層 (TileLayer)
-    base_layers = [c for c in current_children if isinstance(c, dl.TileLayer) and c.url != '']
+    # 2. 取得 LST 地表溫度影像
+    lst = get_l8_summer_lst(selected_year)
     
-    if lst_image is not None:
+    # 預設最終地圖為 None
+    final_map = None
+
+    if rgb is not None:
+        # 如果 RGB 成功，將其設為底圖
+        final_map = rgb.visualize(**VIS_PARAMS)
+        status_text = f"當前年份: {selected_year}（夏季 RGB 合成）"
+
+        if lst is not None:
+            try:
+                # --- 視覺化 LST ---
+                lst_vis = {
+                'min': 10,
+                'max': 45,
+                'palette': [
+                '040274', '0502a3', '0502ce', '0602ff', '307ef3',
+                '30c8e2', '3be285', '86e26f', 'b5e22e', 'ffd611',
+                'ff8b13', 'ff0000', 'c21301', '911003'
+                ]}
+
+                lst_img = lst.visualize(**lst_vis)
+
+                # --- RGB + LST 疊圖 ---
+                # 讓 LST 疊在 RGB 上面
+                final_map = ee.ImageCollection([
+                    final_map, # RGB 放在第一層作為底圖
+                    lst_img
+                ]).mosaic() # 合成
+
+                status_text = f"當前年份: {selected_year}（RGB + 地表溫度疊圖）"
+
+            except ee.ee_exception.EEException as e:
+                print(f"GEE LST Overlay Error: {e}")
+                status_text = f"當前年份: {selected_year} (LST 處理錯誤，僅顯示 RGB)"
+            
+        
+        # 3. 產生縮圖 URL
         try:
-            # 1. 取得 GEE Tile Layer URL
-            map_info = lst_image.getMapId(LST_VIS)
-            tile_url = map_info['tile_fetcher'].url_format
+            url = final_map.getThumbURL({
+                'scale': 100,
+                'region': region.getInfo()
+            })
+        except Exception as e:
+            print(f"General Thumbnail Error: {e}")
+            status_text = f"當前年份: {selected_year} (縮圖產生失敗)"
 
-            # 2. 建立 GEE LST 影像圖層
-            lst_layer = dl.TileLayer(
-                url=tile_url,
-                id='gee-lst-layer',
-                attribution=f'GEE Landsat 8 LST {selected_year} / Data Clickable',
-                opacity=0.8,
-                zIndex=10 
-            )
-            
-            # 3. 組合地圖子元件：底圖 + GEE LST
-            new_children = base_layers + [lst_layer]
-
-            status_text = f"當前年份: {selected_year} (夏季地表溫度圖層載入成功)"
-
-        except ee.ee_exception.EEException as e:
-            print(f"GEE Tile Generation Error: {e}")
-            new_children = base_layers
-            status_text = f"當前年份: {selected_year} (GEE 影像處理錯誤：{e})"
-            
     else:
-        print(f"Warning: No GEE images found for Summer {selected_year}.")
-        new_children = base_layers
-        status_text = f"當前年份: {selected_year} (無可用 LST 影像資料)"
-
-    return new_children, status_text
+        # 兩種影像都無法取得
+        status_text = f"當前年份: {selected_year} (無 Landsat 影像資料)"
+        
+    return url, status_text
 
 # ----------------------------------------------------
 # 5. Callback 2：處理地圖點擊事件並查詢 LST 數值
