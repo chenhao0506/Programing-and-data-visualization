@@ -9,22 +9,16 @@ from google.oauth2 import service_account
 from typing import List, Dict, Any
 
 # ----------------------------------------------------
-# 1. Hugging Face 環境變數 → Earth Engine 初始化
+# 1. Earth Engine 初始化 (保持不變)
 # ----------------------------------------------------
 GEE_SECRET = os.environ.get("GEE_SERVICE_SECRET", "")
 if not GEE_SECRET:
-    # 這是為了在 Hugging Face 環境中運行，但在本地測試時可能需要手動註釋掉或設定
-    # raise ValueError("請先在 Hugging Face 設定環境變數 GEE_SERVICE_SECRET（完整 JSON）。")
-    print("Warning: GEE_SERVICE_SECRET environment variable not set. Assuming local setup or authentication failure.")
-    # 如果本地測試，請確保您已使用 'earthengine authenticate' 進行身份驗證，或者直接使用您的服務帳號 JSON
     # 這裡假設如果環境變數不存在，就使用本地默認的 GEE 身份驗證，如果失敗則程序會報錯。
     try:
         ee.Initialize()
         print("Earth Engine 初始化成功 (使用本地默認憑證)")
     except Exception as e:
         print(f"Earth Engine 初始化失敗: {e}")
-        # 如果無法初始化，後續的 GEE 相關函數將會失敗。
-        # 為了讓 Dash App 結構能被看到，這裡不強制退出，但在實際運行時需要確保 GEE 初始化成功。
 else:
     service_account_info = json.loads(GEE_SECRET)
     credentials = service_account.Credentials.from_service_account_info(
@@ -35,7 +29,7 @@ else:
     print("Earth Engine 初始化成功 (使用服務帳號憑證)")
 
 # ----------------------------------------------------
-# 2. GEE 參數定義與去雲合成函數
+# 2. GEE 參數定義與函數 (保持不變)
 # ----------------------------------------------------
 # 台灣中部研究區
 taiwan_region = ee.Geometry.Rectangle([120.24, 23.77, 120.69, 24.20])
@@ -49,10 +43,10 @@ VIS_PARAMS = {
     'min': 0,
     'max': 0.3,
     'gamma': 1.4,
-    'tileScale': 8  # 放到 vis_params
+    'tileScale': 8
 }
 
-# 可視化參數 (LST) - 提取顏色、最小值和最大值，方便圖例使用
+# 可視化參數 (LST) - 提取顏色、最小值和最大值
 LST_MIN = 10
 LST_MAX = 45
 LST_PALETTE = [
@@ -72,7 +66,6 @@ def mask_clouds_and_scale(image):
     cloud_bit_mask = 1 << 3
     cloud_shadow_bit_mask = 1 << 4
     mask = qa.bitwiseAnd(cloud_bit_mask).eq(0).And(qa.bitwiseAnd(cloud_shadow_bit_mask).eq(0))
-    # 這裡僅選擇 RGB 波段進行去雲和縮放
     return image.updateMask(mask).select(['SR_B4', 'SR_B3', 'SR_B2']).multiply(0.0000275).add(-0.2)
 
 def get_l8_summer_composite(year):
@@ -86,14 +79,9 @@ def get_l8_summer_composite(year):
         if collection.size().getInfo() == 0:
             print(f"Warning: No Landsat 8 images found for Summer {year} composite.")
             return None
-        # 原始去雲合成
         image = collection.map(mask_clouds_and_scale).median()
-        # --------------------------
-        # 迭代內插填補空洞
-        # --------------------------
         iterations = 10
         for i in range(iterations):
-            # focal_mean 半徑 3 pixels，僅填補空值
             image = image.unmask(image.focal_mean(radius=3, kernelType='circle', units='pixels'))
         return image.clip(taiwan_composite_region)
     except ee.ee_exception.EEException as e:
@@ -118,15 +106,12 @@ def get_l8_summer_lst(year):
         lst = (
             collection.select('ST_B10')
             .median()
-            .multiply(0.00341802) # 輻射亮度轉換為 K (開爾文)
-            .add(149.0)            # 調整為 K (開爾文)
-            .subtract(273.15)      # 轉換為 C (攝氏)
+            .multiply(0.00341802) 
+            .add(149.0)            
+            .subtract(273.15)      
             .rename("LST_C")
             .clip(taiwan_region)
         )
-        # --------------------------
-        # 迭代內插填補空洞
-        # --------------------------
         iterations = 10
         for i in range(iterations):
             lst = lst.unmask(lst.focal_mean(radius=3, kernelType='circle', units='pixels'))
@@ -139,30 +124,39 @@ def get_l8_summer_lst(year):
         return None
 
 # ----------------------------------------------------
-# 3. 圖例生成函數
+# 3. 圖例生成函數 (已修改，展示所有 14 個顏色)
 # ----------------------------------------------------
 def create_lst_legend(min_val: float, max_val: float, palette: List[str]) -> html.Div:
     """
-    根據 LST 可視化參數創建 HTML 圖例。
+    根據 LST 可視化參數創建 HTML 圖例，並展示調色盤中的所有顏色。
     """
-    # 決定圖例要顯示多少個標籤，例如分成 7 級
-    num_labels = 7
-    # 步長
-    step = (max_val - min_val) / (num_labels - 1)
+    num_colors = len(palette) # 14 個顏色
     
-    # 準備標籤和對應的顏色索引 (從調色盤中均勻取樣)
+    # 共有 num_colors - 1 (13) 個區間
+    # 計算每一步長代表的溫度差異
+    if num_colors > 1:
+        temp_step = (max_val - min_val) / (num_colors - 1)
+    else:
+        temp_step = 0
+
     labels = []
     
-    # 確保調色盤的顏色數量足夠
-    num_colors = len(palette)
-    
-    for i in range(num_labels):
-        # 計算溫度值
-        temp = min_val + i * step
-        # 確保顏色索引在範圍內
-        color_index = int(i * (num_colors - 1) / (num_labels - 1))
-        color = palette[color_index]
+    for i in range(num_colors):
+        # 計算當前顏色塊代表的溫度下限
+        temp_val = min_val + i * temp_step
+        color = palette[i]
         
+        # 標籤文字
+        if i == num_colors - 1:
+            # 最高溫標籤只顯示最高值
+            label_text = f"≧ {temp_val:.1f} °C" 
+        elif i == 0:
+            # 最低溫標籤只顯示最低值
+            label_text = f"≦ {temp_val:.1f} °C"
+        else:
+            # 中間標籤顯示當前顏色塊的溫度下限 (代表該顏色區間的起始點)
+            label_text = f"{temp_val:.1f} °C" 
+
         # 顏色塊和標籤
         label = html.Div(
             style={
@@ -180,31 +174,205 @@ def create_lst_legend(min_val: float, max_val: float, palette: List[str]) -> htm
                         'border': '1px solid #333'
                     }
                 ),
-                html.Span(f"{temp:.1f} °C", style={'fontSize': '12px', 'color': '#333'})
+                html.Span(label_text, style={'fontSize': '12px', 'color': '#333'})
             ]
         )
         labels.append(label)
 
+    # 反轉圖例，讓最低溫在底部 (較符合傳統圖例習慣，冷色在下，暖色在上)
+    labels.reverse()
+    
+    # 為了讓標籤對應更直觀，我們將最高溫的標籤放在頂部，並將顏色塊的順序反轉以對應
+    
+    # 重新生成標籤，將溫度從上到下由熱到冷排列
+    new_labels = []
+    
+    # 計算每塊顏色的溫度上限和下限
+    for i in range(num_colors):
+        # 當前顏色：從最熱 (i=0, palette[-1]) 到最冷 (i=13, palette[0])
+        color = palette[num_colors - 1 - i] # 從 LST_PALETTE 的末尾取顏色 (最熱)
+        
+        # 溫度點：從 LST_MAX 遞減到 LST_MIN
+        temp_at_point = max_val - i * temp_step
+        
+        if i == 0:
+            # 第一個點：代表最高溫
+            label_text = f"≧ {max_val:.1f} °C" 
+        elif i == num_colors - 1:
+            # 最後一個點：代表最低溫
+            label_text = f"≦ {min_val:.1f} °C"
+        else:
+            # 中間點：代表該顏色區間的下限溫度
+            lower_bound = max_val - (i+1) * temp_step
+            upper_bound = max_val - i * temp_step
+            # 顯示該顏色代表的溫度區間 (例如：39.2°C ~ 41.9°C)
+            label_text = f"{upper_bound:.1f} ~ {lower_bound:.1f} °C"
+
+
+        # 顏色塊和標籤
+        label = html.Div(
+            style={
+                'display': 'flex',
+                'alignItems': 'center',
+                'marginBottom': '1px' # 縮小間距，以容納更多標籤
+            },
+            children=[
+                html.Div(
+                    style={
+                        'backgroundColor': f'#{color}',
+                        'width': '15px',
+                        'height': '15px',
+                        'marginRight': '5px',
+                        'border': '1px solid #333'
+                    }
+                ),
+                html.Span(label_text, style={'fontSize': '10px', 'color': '#333'}) # 縮小字體
+            ]
+        )
+        new_labels.append(label)
+
+    # 調整圖例結構，讓它看起來像一個連續的色帶
+    legend_elements = []
+    
+    # 頂部最高溫標籤
+    legend_elements.append(
+        html.Div(f"LST (Max: {LST_MAX:.1f} °C)", style={'textAlign': 'center', 'fontSize': '10px', 'color': '#333', 'marginBottom': '3px'})
+    )
+    
+    # 連續的顏色帶 (14 個小色塊堆疊)
+    color_band = []
+    for i in range(num_colors):
+        color = palette[num_colors - 1 - i] # 從熱到冷排列
+        temp_point = max_val - i * temp_step
+        
+        # 標籤的位置，只顯示每隔幾個點的溫度值
+        if i % 3 == 0 or i == num_colors - 1 or i == 0: # 顯示 0, 3, 6, 9, 12, 13 (6個標籤)
+            temp_label = html.Span(
+                f"{temp_point:.1f}", 
+                style={'fontSize': '9px', 'position': 'absolute', 'left': '25px', 'top': f'{i * 10 - 5}px', 'color': '#333'}
+            )
+        else:
+            temp_label = None
+
+        color_band.append(
+            html.Div(
+                style={
+                    'backgroundColor': f'#{color}',
+                    'height': '10px', # 每個色塊的高度
+                    'width': '15px'
+                }
+            )
+        )
+        if temp_label:
+             color_band.append(temp_label)
+
+
+    # 調整為色帶和標籤分開顯示的標準格式
+    legend_items = []
+    
+    # 計算要顯示的標籤點
+    num_points = 5 # 顯示 5 個標籤點
+    
+    for i in range(num_points):
+        # 溫度值：從 LST_MAX 到 LST_MIN
+        temp = LST_MAX - i * (LST_MAX - LST_MIN) / (num_points - 1)
+        
+        # 將溫度值對應到 0 到 1 的比例
+        norm_temp = (temp - LST_MIN) / (LST_MAX - LST_MIN)
+        
+        # 確定標籤位置
+        # 色帶長度約 14 * 10 = 140px，我們以百分比定位標籤
+        
+        legend_items.append(
+            html.Div(
+                f"{temp:.1f}°C",
+                style={
+                    'position': 'absolute',
+                    'top': f'{i * 25}px', # 標籤垂直間距 (假設色帶長度 100px)
+                    'right': '30px',
+                    'fontSize': '11px',
+                    'color': '#333'
+                }
+            )
+        )
+
+
+    final_legend_children = [
+        html.H5("LST 地表溫度 (°C)", style={'textAlign': 'center', 'margin': '0 0 10px 0', 'fontSize': '14px', 'color': '#333'}),
+        html.Div(
+            style={
+                'position': 'relative',
+                'height': f'{num_colors * 15}px', # 總高度 (14 * 15 = 210px)
+                'width': '60px',
+                'margin': '0 auto'
+            },
+            children=[
+                # 顏色帶
+                html.Div(
+                    style={
+                        'display': 'flex',
+                        'flexDirection': 'column',
+                        'position': 'absolute',
+                        'left': '0',
+                        'top': '0',
+                        'width': '20px',
+                        'border': '1px solid #333'
+                    },
+                    children=[
+                        html.Div(
+                            style={
+                                'backgroundColor': f'#{palette[num_colors - 1 - k]}', # 從熱到冷
+                                'height': '15px', 
+                                'width': '100%',
+                            }
+                        ) for k in range(num_colors)
+                    ]
+                ),
+                # 標籤 (只顯示 5 個主要標籤)
+                html.Div(
+                    f"{LST_MAX:.1f}",
+                    style={'position': 'absolute', 'top': '0px', 'left': '25px', 'fontSize': '11px', 'color': '#333'}
+                ),
+                html.Div(
+                    f"{LST_MAX - 1 * (LST_MAX - LST_MIN) / 4:.1f}",
+                    style={'position': 'absolute', 'top': f'{1 * (num_colors-1) * 15 / 4}px', 'left': '25px', 'fontSize': '11px', 'color': '#333'}
+                ),
+                html.Div(
+                    f"{LST_MAX - 2 * (LST_MAX - LST_MIN) / 4:.1f}",
+                    style={'position': 'absolute', 'top': f'{2 * (num_colors-1) * 15 / 4}px', 'left': '25px', 'fontSize': '11px', 'color': '#333'}
+                ),
+                html.Div(
+                    f"{LST_MAX - 3 * (LST_MAX - LST_MIN) / 4:.1f}",
+                    style={'position': 'absolute', 'top': f'{3 * (num_colors-1) * 15 / 4}px', 'left': '25px', 'fontSize': '11px', 'color': '#333'}
+                ),
+                html.Div(
+                    f"{LST_MIN:.1f}",
+                    style={'position': 'absolute', 'top': f'{(num_colors-1) * 15}px', 'left': '25px', 'fontSize': '11px', 'color': '#333'}
+                ),
+            ]
+        )
+    ]
+    
+    # 最終圖例容器
     return html.Div(
         id='lst-legend',
         style={
             'position': 'absolute',
-            'top': '10px',        # 調整圖例位置
+            'top': '10px',        
             'right': '10px',
-            'zIndex': 1000,       # 確保圖例在地圖圖層之上
+            'zIndex': 1000,       
             'backgroundColor': 'rgba(255, 255, 255, 0.9)',
             'padding': '10px',
             'borderRadius': '5px',
-            'boxShadow': '0 2px 4px rgba(0,0,0,0.2)'
+            'boxShadow': '0 2px 4px rgba(0,0,0,0.2)',
+            'width': '120px', # 增加寬度以容納色帶和標籤
+            'height': '250px' # 增加高度以容納色帶
         },
-        children=[
-            html.H5("LST 地表溫度 (°C)", style={'textAlign': 'center', 'margin': '0 0 10px 0', 'fontSize': '14px', 'color': '#333'}),
-            *labels  # 展開生成的標籤列表
-        ]
+        children=final_legend_children
     )
 
 # ----------------------------------------------------
-# 4. Dash App 建立
+# 4. Dash App 建立 (保持不變)
 # ----------------------------------------------------
 app = dash.Dash(__name__)
 # 台灣中心點
@@ -250,18 +418,18 @@ app.layout = html.Div([
                     dl.TileLayer(url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
                                   id='osm-layer', opacity=0.3, zIndex=1), 
                     
-                    # 新增 LST 圖例，直接放在地圖 children 裡面
+                    # LST 圖例
                     lst_legend_component
                 ]
             ),
             dcc.Store(id='map-click-data', data={})
         ], style={'width': '80%', 'margin': '0 auto', 'border': '5px solid #3498DB', 
-                  'border-radius': '8px', 'position': 'relative'}) # 設置 position: relative 讓圖例的 absolute 定位生效
+                  'border-radius': '8px', 'position': 'relative'})
     )
 ])
 
 # ----------------------------------------------------
-# 5. Callback：根據滑桿值更新影像（三層式）
+# 5. Callback：根據滑桿值更新影像（保持不變）
 # ----------------------------------------------------
 @app.callback(
     [Output('leaflet-map', 'children'),
@@ -290,7 +458,7 @@ def update_map_layer(selected_year, current_children):
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         id='global-osm-layer',
         opacity=1.0,
-        zIndex=1 # 最底層
+        zIndex=1
     )
     new_children.append(global_osm)
     
@@ -304,7 +472,7 @@ def update_map_layer(selected_year, current_children):
                 id='gee-composite-layer',
                 attribution=f'GEE Landsat 8 Composite Taiwan {selected_year}',
                 opacity=1.0,
-                zIndex=5 # 中間層
+                zIndex=5
             )
             new_children.append(landsat_layer)
             status_text = f"當前年份: {selected_year} (台灣全島底圖載入成功)"
@@ -322,7 +490,7 @@ def update_map_layer(selected_year, current_children):
                 id='gee-lst-layer',
                 attribution=f'GEE Landsat 8 LST Taiwan Central {selected_year}',
                 opacity=0.8,
-                zIndex=10 # 最上層
+                zIndex=10
             )
             new_children.append(lst_layer)
             if "載入失敗" not in status_text:
@@ -337,7 +505,6 @@ def update_map_layer(selected_year, current_children):
         if "載入成功" not in status_text:
             status_text = f"當前年份: {selected_year} (無可用 GEE 影像資料)"
             
-    # 返回新的子元件列表，圖例會被保留
     return new_children, status_text
 
 # ----------------------------------------------------
