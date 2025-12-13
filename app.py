@@ -72,8 +72,20 @@ def get_l8_summer_composite(year):
     if collection.size().getInfo() == 0:
         print(f"Warning: No Landsat 8 images found for Summer {year}.")
         return None
-    final_image = collection.map(mask_clouds_and_scale).median().unmask(0)
-    return final_image.clip(taiwan_composite_region)
+
+    # 原始去雲合成
+    image = collection.map(mask_clouds_and_scale).median()
+
+    # --------------------------
+    # 迭代內插填補空洞
+    # --------------------------
+    iterations = 10
+    for i in range(iterations):
+        # focal_mean 半徑 3 pixels，僅填補空值
+        image = image.unmask(image.focal_mean(radius=3, kernelType='circle', units='pixels'))
+
+    return image.clip(taiwan_composite_region)
+
 
 def get_l8_summer_lst(year):
     collection = (
@@ -84,16 +96,26 @@ def get_l8_summer_lst(year):
     )
     if collection.size().getInfo() == 0:
         return None
+
     lst = (
         collection.select('ST_B10')
         .median()
         .multiply(0.00341802)
         .add(149.0)
         .subtract(273.15)
-        .rename("LST_C")  # 改名為攝氏欄位
+        .rename("LST_C")
         .clip(taiwan_region)
     )
+
+    # --------------------------
+    # 迭代內插填補空洞
+    # --------------------------
+    iterations = 10
+    for i in range(iterations):
+        lst = lst.unmask(lst.focal_mean(radius=3, kernelType='circle', units='pixels'))
+
     return lst
+
 
 # ----------------------------------------------------
 # 3. Dash App 建立
