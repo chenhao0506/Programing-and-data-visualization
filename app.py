@@ -118,7 +118,7 @@ def get_gee_urls(year):
         return None, None
     
     lst_raw = collection.map(mask_clouds_and_scale).select('ST_B10').median().multiply(0.00341802).add(149.0).subtract(273.15).clip(taiwan_region)
-    local_mean = lst_raw.focal_mean(radius=50, kernelType='circle', units='pixels')
+    local_mean = lst_raw.focal_mean(radius=30, kernelType='circle', units='pixels')
     is_stable = lst_raw.subtract(local_mean).abs().lte(10)
     lst_clean = lst_raw.updateMask(is_stable)
     lst_final = lst_clean.unmask(lst_clean.focal_mean(radius=10, iterations=2)).focal_mean(radius=1)
