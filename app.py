@@ -9,7 +9,7 @@ from google.oauth2 import service_account
 from typing import List
 
 # ----------------------------------------------------
-# 1. Earth Engine 初始化 (保持原樣)
+# 1. Earth Engine 初始化
 # ----------------------------------------------------
 GEE_SECRET = os.environ.get("GEE_SERVICE_SECRET", "")
 if not GEE_SECRET:
@@ -40,30 +40,36 @@ NDVI_VIS = {
     'palette': ['FFFFFF', 'CE7E45', 'F1B555', '66A000', '207401', '056201', '004C00']
 }
 
-def create_map_legend(title: str, min_val: float, max_val: float, palette: List[str], unit: str) -> html.Div:
+def create_complete_legend(title: str, min_val: float, max_val: float, palette: List[str], unit: str) -> html.Div:
     """
-    通用圖例生成函數，生成一個垂直色帶與對應刻度
+    生成包含所有調色盤顏色的垂直圖例
     """
     num_colors = len(palette)
-    # 建立色帶塊 (從上到下：熱 -> 冷 / 高 -> 低)
+    block_height = 25 # 每個色塊的高度
+    
+    # 建立所有色塊 (從上到下：熱->冷 / 高->低)
     color_blocks = [
         html.Div(style={
-            'backgroundColor': f'#{palette[i]}' if not palette[i].startswith('#') else palette[i],
-            'height': '20px', 'width': '20px'
-        }) for i in reversed(range(num_colors))
+            'backgroundColor': f'#{color}' if not str(color).startswith('#') else color,
+            'height': f'{block_height}px', 'width': '20px', 'borderLeft': '1px solid #333', 'borderRight': '1px solid #333'
+        }) for color in reversed(palette)
     ]
+    # 為第一個和最後一個色塊加邊框
+    color_blocks[0].style['borderTop'] = '1px solid #333'
+    color_blocks[-1].style['borderBottom'] = '1px solid #333'
 
-    # 建立刻度標籤 (顯示 5 個點)
+    # 建立標籤 (顯示 5 個主要刻度)
     labels = []
     num_labels = 5
+    total_height = num_colors * block_height
     for i in range(num_labels):
         val = max_val - i * (max_val - min_val) / (num_labels - 1)
-        # 計算 top 位置 (色帶總高度是 num_colors * 20px)
-        top_pos = i * (num_colors - 1) * 20 / (num_labels - 1)
+        # 計算 top 位置，讓文字對齊色塊
+        top_pos = i * (total_height - block_height) / (num_labels - 1)
         labels.append(html.Div(
             f"{val:.1f}{unit}",
             style={
-                'position': 'absolute', 'top': f'{top_pos - 7}px', 
+                'position': 'absolute', 'top': f'{top_pos + 5}px', 
                 'left': '28px', 'fontSize': '11px', 'color': '#333', 'whiteSpace': 'nowrap'
             }
         ))
@@ -71,16 +77,16 @@ def create_map_legend(title: str, min_val: float, max_val: float, palette: List[
     return html.Div(
         style={
             'position': 'absolute', 'top': '10px', 'right': '10px', 'zIndex': 1000,
-            'backgroundColor': 'rgba(255, 255, 255, 0.85)', 'padding': '10px',
+            'backgroundColor': 'rgba(255, 255, 255, 0.9)', 'padding': '10px',
             'borderRadius': '5px', 'boxShadow': '0 2px 4px rgba(0,0,0,0.2)',
-            'width': '85px'
+            'width': '90px'
         },
         children=[
-            html.Div(title, style={'fontSize': '12px', 'fontWeight': 'bold', 'marginBottom': '8px', 'textAlign': 'center'}),
+            html.Div(title, style={'fontSize': '13px', 'fontWeight': 'bold', 'marginBottom': '10px', 'textAlign': 'center'}),
             html.Div(
-                style={'position': 'relative', 'height': f'{num_colors * 20}px'},
+                style={'position': 'relative', 'height': f'{total_height + 20}px'},
                 children=[
-                    html.Div(color_blocks, style={'border': '1px solid #666', 'width': '20px'}),
+                    html.Div(color_blocks),
                     html.Div(labels)
                 ]
             )
@@ -88,7 +94,7 @@ def create_map_legend(title: str, min_val: float, max_val: float, palette: List[
     )
 
 # ----------------------------------------------------
-# 3. GEE 數據處理函數 (保持原樣)
+# 3. GEE 數據處理函數
 # ----------------------------------------------------
 taiwan_region = ee.Geometry.Rectangle([120.24, 23.77, 120.69, 24.20])
 years = list(range(2015, 2026))
@@ -145,20 +151,20 @@ header_style = {
 
 app.layout = html.Div([
     html.H1("2015-2025 台灣中部 LST 與 NDVI 時空對照", 
-            style={'textAlign': 'center', 'margin': '20px', 'color': '#2c3e50'}),
+            style={'textAlign': 'center', 'margin': '20px', 'color': '#2c3e50', 'fontFamily': 'Arial'}),
 
     html.Div([
-        html.Label("年份選擇：", style={'fontWeight': 'bold'}),
+        html.Label("年份選擇：", style={'fontWeight': 'bold', 'fontSize': '18px'}),
         dcc.Slider(
             id='year-slider', min=min(years), max=max(years), step=1, value=max(years),
             marks={str(y): str(y) for y in years},
             tooltip={"placement": "bottom", "always_visible": True}
         ),
-        html.Div(id='status-msg', style={'marginTop': '10px', 'fontSize': '14px'})
+        html.Div(id='status-msg', style={'marginTop': '10px', 'color': 'green', 'fontWeight': 'bold'})
     ], style={**card_style, 'width': '90%', 'margin': '0 auto 20px auto'}),
 
     html.Div([
-        # 左圖：LST + 圖例
+        # 左圖：LST
         html.Div([
             html.Div("地表溫度 (LST)", style={**header_style, 'backgroundColor': '#e74c3c'}),
             dl.Map(
@@ -166,13 +172,13 @@ app.layout = html.Div([
                 children=[
                     dl.TileLayer(url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"),
                     dl.TileLayer(id="lst-layer", opacity=0.8),
-                    create_map_legend("LST", LST_VIS['min'], LST_VIS['max'], LST_VIS['palette'], "°C")
+                    create_complete_legend("LST", LST_VIS['min'], LST_VIS['max'], LST_VIS['palette'], "°C")
                 ],
                 style={'height': '600px', 'width': '100%'}
             )
-        ], style={**card_style, 'width': '49%', 'padding': '0'}),
+        ], style={**card_style, 'width': '48%', 'padding': '0'}),
 
-        # 右圖：NDVI + 圖例
+        # 右圖：NDVI
         html.Div([
             html.Div("植生指數 (NDVI)", style={**header_style, 'backgroundColor': '#27ae60'}),
             dl.Map(
@@ -180,14 +186,18 @@ app.layout = html.Div([
                 children=[
                     dl.TileLayer(url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"),
                     dl.TileLayer(id="ndvi-layer", opacity=0.8),
-                    create_map_legend("NDVI", NDVI_VIS['min'], NDVI_VIS['max'], NDVI_VIS['palette'], "")
+                    create_complete_legend("NDVI", NDVI_VIS['min'], NDVI_VIS['max'], NDVI_VIS['palette'], "")
                 ],
                 style={'height': '600px', 'width': '100%'}
             )
-        ], style={**card_style, 'width': '49%', 'padding': '0'}),
+        ], style={**card_style, 'width': '48%', 'padding': '0'}),
 
-    ], style={'display': 'flex', 'justifyContent': 'space-around', 'padding': '0 20px'})
-], style={'backgroundColor': '#f8f9fa', 'minHeight': '100vh'})
+    ], style={'display': 'flex', 'justifyContent': 'space-between', 'width': '95%', 'margin': '0 auto'}),
+
+    html.P("提示：如果某區塊溫度與周圍平均溫差超過 10°C，程式會自動將其視為雲影雜訊並進行修復。", 
+           style={'textAlign': 'center', 'color': '#777', 'marginTop': '20px', 'fontSize': '14px'})
+
+], style={'backgroundColor': '#f4f6f9', 'minHeight': '100vh', 'paddingBottom': '20px'})
 
 # ----------------------------------------------------
 # 5. 互動邏輯
@@ -199,8 +209,8 @@ app.layout = html.Div([
 def update_layers(year):
     lst_url, ndvi_url = get_gee_urls(year)
     if not lst_url:
-        return "", "", f" {year} 年影像不可用"
-    return lst_url, ndvi_url, f" 已載入 {year} 年數據"
+        return "", "", f" {year} 年夏季無可用影像"
+    return lst_url, ndvi_url, f" {year} 年影像載入完成"
 
 @app.callback(Output('map-right', 'viewport'), Input('map-left', 'viewport'))
 def sync_left_to_right(viewport): return viewport
