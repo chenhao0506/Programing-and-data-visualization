@@ -199,8 +199,8 @@ app.layout = html.Div([
 def update_layers(year):
     lst_url, ndvi_url = get_gee_urls(year)
     if not lst_url:
-        return "", "", f"❌ {year} 年影像不可用"
-    return lst_url, ndvi_url, f"✅ 已載入 {year} 年數據"
+        return "", "", f" {year} 年影像不可用"
+    return lst_url, ndvi_url, f" 已載入 {year} 年數據"
 
 @app.callback(Output('map-right', 'viewport'), Input('map-left', 'viewport'))
 def sync_left_to_right(viewport): return viewport
