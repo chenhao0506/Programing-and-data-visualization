@@ -123,8 +123,8 @@ def get_gee_urls(year):
     is_stable = lst_raw.subtract(local_mean).abs().lte(10)
     lst_clean = lst_raw.updateMask(is_stable)
     
-    # 填補 (保留 iteration=2)
-    fill_base = lst_clean.focal_mean(radius=10, kernelType='circle', units='pixels', iterations=2)
+    # 填補 (保留)
+    fill_base = lst_clean.focal_mean(radius=10, kernelType='circle', units='pixels', iterations = 1)
     lst_filled = lst_clean.unmask(fill_base)
     lst_final = lst_filled.focal_mean(radius=1, kernelType='circle', units='pixels')
     
