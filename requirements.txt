@@ -5,4 +5,4 @@ dash
 pandas
 plotly
 dash_leaflet
-dash-bootstrap_components
+dash_bootstrap_components
