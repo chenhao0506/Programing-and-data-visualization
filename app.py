@@ -46,7 +46,7 @@ NDVI_VIS = {
 
 def create_complete_legend(title: str, min_val: float, max_val: float, palette: List[str], unit: str) -> html.Div:
     num_colors = len(palette)
-    block_height = 25 
+    block_height = 10
     
     color_blocks = [
         html.Div(style={
