@@ -29,9 +29,11 @@ else:
 # 2. 參數設定與圖例生成函數
 # ----------------------------------------------------
 LST_VIS = {
-    'min': 20, 
-    'max': 45, 
-    'palette': ['040274', '0402ff', '3be285', 'ffd611', 'ff0000', '911003']
+    'min': 15, 
+    'max': 50, 
+    'palette': ['040274', '0502a3', '0502ce', '0602ff', '307ef3',
+            '30c8e2', '3be285', '86e26f', 'b5e22e', 'ffd611',
+            'ff8b13', 'ff0000', 'c21301', '911003']
 }
 
 NDVI_VIS = {
@@ -45,7 +47,7 @@ def create_complete_legend(title: str, min_val: float, max_val: float, palette: 
     生成包含所有調色盤顏色的垂直圖例
     """
     num_colors = len(palette)
-    block_height = 25 # 每個色塊的高度
+    block_height = 10 # 每個色塊的高度
     
     # 建立所有色塊 (從上到下：熱->冷 / 高->低)
     color_blocks = [
