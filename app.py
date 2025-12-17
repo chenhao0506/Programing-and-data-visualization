@@ -29,11 +29,9 @@ else:
 # 2. 參數設定與圖例生成函數
 # ----------------------------------------------------
 LST_VIS = {
-    'min': 15, 
-    'max': 50, 
-    'palette': ['040274', '0502a3', '0502ce', '0602ff', '307ef3',
-            '30c8e2', '3be285', '86e26f', 'b5e22e', 'ffd611',
-            'ff8b13', 'ff0000', 'c21301', '911003']
+    'min': 20, 
+    'max': 45, 
+    'palette': ['040274', '0402ff', '3be285', 'ffd611', 'ff0000', '911003']
 }
 
 NDVI_VIS = {
@@ -43,30 +41,23 @@ NDVI_VIS = {
 }
 
 def create_complete_legend(title: str, min_val: float, max_val: float, palette: List[str], unit: str) -> html.Div:
-    """
-    生成包含所有調色盤顏色的垂直圖例
-    """
     num_colors = len(palette)
-    block_height = 10 # 每個色塊的高度
+    block_height = 25 
     
-    # 建立所有色塊 (從上到下：熱->冷 / 高->低)
     color_blocks = [
         html.Div(style={
             'backgroundColor': f'#{color}' if not str(color).startswith('#') else color,
             'height': f'{block_height}px', 'width': '20px', 'borderLeft': '1px solid #333', 'borderRight': '1px solid #333'
         }) for color in reversed(palette)
     ]
-    # 為第一個和最後一個色塊加邊框
     color_blocks[0].style['borderTop'] = '1px solid #333'
     color_blocks[-1].style['borderBottom'] = '1px solid #333'
 
-    # 建立標籤 (顯示 5 個主要刻度)
     labels = []
     num_labels = 5
     total_height = num_colors * block_height
     for i in range(num_labels):
         val = max_val - i * (max_val - min_val) / (num_labels - 1)
-        # 計算 top 位置，讓文字對齊色塊
         top_pos = i * (total_height - block_height) / (num_labels - 1)
         labels.append(html.Div(
             f"{val:.1f}{unit}",
@@ -96,7 +87,7 @@ def create_complete_legend(title: str, min_val: float, max_val: float, palette: 
     )
 
 # ----------------------------------------------------
-# 3. GEE 數據處理函數
+# 3. GEE 數據處理函數 (效能優化版)
 # ----------------------------------------------------
 taiwan_region = ee.Geometry.Rectangle([120.24, 23.77, 120.69, 24.20])
 years = list(range(2015, 2026))
@@ -114,27 +105,40 @@ def get_gee_urls(year):
         .filterDate(f"{year}-06-01", f"{year}-08-31")
         .filter(ee.Filter.lt('CLOUD_COVER', 60))
     )
+    
     if collection.size().getInfo() == 0:
         return None, None
     
-    lst_raw = collection.map(mask_clouds_and_scale).select('ST_B10').median().multiply(0.00341802).add(149.0).subtract(273.15).clip(taiwan_region)
-    local_mean = lst_raw.focal_mean(radius=30, kernelType='circle', units='pixels')
+    # 先做 median 合併，後續所有複雜空間運算只跑一次
+    base_img = collection.map(mask_clouds_and_scale).median().clip(taiwan_region)
+    
+    # --- 1. LST 處理 ---
+    lst_raw = (
+        base_img.select('ST_B10')
+        .multiply(0.00341802).add(149.0).subtract(273.15)
+    )
+    
+    # 空間溫差過濾 (Spatial Consistency Check)
+    local_mean = lst_raw.focal_mean(radius=40, kernelType='circle', units='pixels')
     is_stable = lst_raw.subtract(local_mean).abs().lte(10)
     lst_clean = lst_raw.updateMask(is_stable)
-    lst_final = lst_clean.unmask(lst_clean.focal_mean(radius=10, iterations=2)).focal_mean(radius=1)
-
-    def calc_ndvi(img):
-        scaled = img.select(['SR_B5', 'SR_B4']).multiply(0.0000275).add(-0.2)
-        return scaled.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI')
-
-    ndvi_raw = collection.map(mask_clouds_and_scale).map(calc_ndvi).median().clip(taiwan_region)
+    
+    # 填補 (保留 iteration=2)
+    fill_base = lst_clean.focal_mean(radius=10, kernelType='circle', units='pixels', iterations=2)
+    lst_filled = lst_clean.unmask(fill_base)
+    lst_final = lst_filled.focal_mean(radius=1, kernelType='circle', units='pixels')
+    
+    # --- 2. NDVI 處理 ---
+    scaled_bands = base_img.select(['SR_B5', 'SR_B4']).multiply(0.0000275).add(-0.2)
+    ndvi_raw = scaled_bands.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI')
     ndvi_final = ndvi_raw.unmask(ndvi_raw.focal_mean(radius=3, units='pixels'))
     
     try:
         lst_url = lst_final.getMapId(LST_VIS)['tile_fetcher'].url_format
         ndvi_url = ndvi_final.getMapId(NDVI_VIS)['tile_fetcher'].url_format
         return lst_url, ndvi_url
-    except:
+    except Exception as e:
+        print(f"GEE URL 生成失敗: {e}")
         return None, None
 
 # ----------------------------------------------------
@@ -152,23 +156,23 @@ header_style = {
 }
 
 app.layout = html.Div([
-    html.H1("2015-2025 台灣中部 LST 與 NDVI 時空對照", 
-            style={'textAlign': 'center', 'margin': '20px', 'color': '#2c3e50', 'fontFamily': 'Arial'}),
+    html.H1("2015-2025 台灣中部 LST 與 NDVI 時空對照平台", 
+            style={'textAlign': 'center', 'margin': '20px', 'color': '#333', 'fontFamily': 'Arial'}),
 
     html.Div([
-        html.Label("年份選擇：", style={'fontWeight': 'bold', 'fontSize': '18px'}),
+        html.Label("請選擇年份：", style={'fontWeight': 'bold', 'fontSize': '18px'}),
         dcc.Slider(
             id='year-slider', min=min(years), max=max(years), step=1, value=max(years),
             marks={str(y): str(y) for y in years},
             tooltip={"placement": "bottom", "always_visible": True}
         ),
-        html.Div(id='status-msg', style={'marginTop': '10px', 'color': 'green', 'fontWeight': 'bold'})
+        html.Div(id='status-msg', style={'marginTop': '15px', 'color': 'green', 'fontWeight': 'bold'})
     ], style={**card_style, 'width': '90%', 'margin': '0 auto 20px auto'}),
 
     html.Div([
         # 左圖：LST
         html.Div([
-            html.Div("地表溫度 (LST)", style={**header_style, 'backgroundColor': '#e74c3c'}),
+            html.Div("地表溫度 LST", style={**header_style, 'backgroundColor': '#e74c3c'}),
             dl.Map(
                 id="map-left", center=[24.0, 120.5], zoom=10,
                 children=[
@@ -178,11 +182,11 @@ app.layout = html.Div([
                 ],
                 style={'height': '600px', 'width': '100%'}
             )
-        ], style={**card_style, 'width': '48%', 'padding': '0'}),
+        ], style={**card_style, 'width': '48%', 'padding': '0', 'overflow': 'hidden'}),
 
         # 右圖：NDVI
         html.Div([
-            html.Div("植生指數 (NDVI)", style={**header_style, 'backgroundColor': '#27ae60'}),
+            html.Div("植生指數 NDVI", style={**header_style, 'backgroundColor': '#27ae60'}),
             dl.Map(
                 id="map-right", center=[24.0, 120.5], zoom=10,
                 children=[
@@ -192,14 +196,14 @@ app.layout = html.Div([
                 ],
                 style={'height': '600px', 'width': '100%'}
             )
-        ], style={**card_style, 'width': '48%', 'padding': '0'}),
+        ], style={**card_style, 'width': '48%', 'padding': '0', 'overflow': 'hidden'}),
 
     ], style={'display': 'flex', 'justifyContent': 'space-between', 'width': '95%', 'margin': '0 auto'}),
 
     html.P("提示：如果某區塊溫度與周圍平均溫差超過 10°C，程式會自動將其視為雲影雜訊並進行修復。", 
            style={'textAlign': 'center', 'color': '#777', 'marginTop': '20px', 'fontSize': '14px'})
 
-], style={'backgroundColor': '#f4f6f9', 'minHeight': '100vh', 'paddingBottom': '20px'})
+], style={'backgroundColor': '#f4f6f9', 'minHeight': '100vh', 'paddingBottom': '20px', 'fontFamily': 'Arial'})
 
 # ----------------------------------------------------
 # 5. 互動邏輯
